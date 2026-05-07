@@ -1,0 +1,288 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import {
+  transact,
+  getEntity,
+  findEntities,
+  queryDatoms,
+  asOf,
+  getHistory,
+  sinceTransaction,
+  listEntities,
+  listAttributes,
+  getTransaction,
+  getStats,
+} from './datoms.js';
+
+const FactSchema = z.object({
+  op: z.enum(['assert', 'retract']),
+  entity: z.string().min(1),
+  attribute: z.string().min(1),
+  value: z.string(),
+});
+
+export function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: 'nexus-temporal-storage',
+    version: '1.0.0',
+  });
+
+  // ─── transact ───────────────────────────────────────────────────────────────
+  server.tool(
+    'transact',
+    'Atomically assert or retract a batch of facts. All succeed or none do.',
+    {
+      facts: z.array(FactSchema).min(1).describe(
+        'Array of facts: { op: "assert"|"retract", entity, attribute, value }'
+      ),
+      agent_id: z.string().optional().describe('Agent identifier for provenance'),
+      note: z.string().optional().describe('Human-readable note for this transaction'),
+    },
+    async ({ facts, agent_id, note }) => {
+      const result = await transact(facts, agent_id, note);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── get ────────────────────────────────────────────────────────────────────
+  server.tool(
+    'get',
+    'Get current facts for an entity — latest non-retracted value per attribute.',
+    {
+      entity: z.string().min(1).describe('Entity ID, e.g. "project:ecoclaw"'),
+      attribute: z
+        .string()
+        .optional()
+        .describe('Optional: restrict to this attribute'),
+    },
+    async ({ entity, attribute }) => {
+      const facts = await getEntity(entity, attribute);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(facts, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── find ───────────────────────────────────────────────────────────────────
+  server.tool(
+    'find',
+    'Find all entities currently having attribute = value.',
+    {
+      attribute: z.string().min(1).describe('Attribute name to match'),
+      value: z.string().describe('Value to match (exact)'),
+    },
+    async ({ attribute, value }) => {
+      const entities = await findEntities(attribute, value);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(entities, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── query ──────────────────────────────────────────────────────────────────
+  server.tool(
+    'query',
+    'Query current state datoms with optional entity pattern, attribute, and since filters.',
+    {
+      entity_pattern: z
+        .string()
+        .optional()
+        .describe('SQL LIKE pattern for entity, e.g. "project:%"'),
+      attribute: z.string().optional().describe('Filter to this attribute'),
+      since: z
+        .string()
+        .optional()
+        .describe('ISO 8601 timestamp — only datoms from transactions at or after this time'),
+    },
+    async ({ entity_pattern, attribute, since }) => {
+      const results = await queryDatoms(entity_pattern, attribute, since);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(results, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── as_of ──────────────────────────────────────────────────────────────────
+  server.tool(
+    'as_of',
+    'Get the state of an entity at a specific past transaction or timestamp.',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      tx_id: z.number().int().optional().describe('Transaction ID to query as-of'),
+      timestamp: z
+        .string()
+        .optional()
+        .describe('ISO 8601 timestamp to query as-of (used if tx_id not provided)'),
+      attribute: z.string().optional().describe('Optional: restrict to this attribute'),
+    },
+    async ({ entity, tx_id, timestamp, attribute }) => {
+      const facts = await asOf(entity, tx_id, timestamp, attribute);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(facts, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── history ────────────────────────────────────────────────────────────────
+  server.tool(
+    'history',
+    'Get the full timeline of all datoms (including retractions) for an entity/attribute.',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z
+        .string()
+        .optional()
+        .describe('Optional: restrict history to this attribute'),
+    },
+    async ({ entity, attribute }) => {
+      const entries = await getHistory(entity, attribute);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(entries, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── since ──────────────────────────────────────────────────────────────────
+  server.tool(
+    'since',
+    'Get all datoms added after a given transaction ID.',
+    {
+      tx_id: z.number().int().describe('Return datoms with tx_id > this value'),
+      entity_pattern: z
+        .string()
+        .optional()
+        .describe('SQL LIKE pattern to filter entities'),
+    },
+    async ({ tx_id, entity_pattern }) => {
+      const entries = await sinceTransaction(tx_id, entity_pattern);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(entries, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── list_entities ──────────────────────────────────────────────────────────
+  server.tool(
+    'list_entities',
+    'List all distinct entity IDs in the database.',
+    {
+      attribute_filter: z
+        .string()
+        .optional()
+        .describe('Optional: only include entities that have this attribute'),
+    },
+    async ({ attribute_filter }) => {
+      const entities = await listEntities(attribute_filter);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(entities, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── list_attributes ────────────────────────────────────────────────────────
+  server.tool(
+    'list_attributes',
+    'List all distinct attributes and their usage counts.',
+    {},
+    async () => {
+      const attrs = await listAttributes();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(attrs, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── get_transaction ────────────────────────────────────────────────────────
+  server.tool(
+    'get_transaction',
+    'Get transaction metadata and all datoms written in that transaction.',
+    {
+      tx_id: z.number().int().describe('Transaction ID to retrieve'),
+    },
+    async ({ tx_id }) => {
+      const tx = await getTransaction(tx_id);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(tx, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ─── stats ──────────────────────────────────────────────────────────────────
+  server.tool(
+    'stats',
+    'Get database statistics: total datoms, transactions, entities, attributes, and DB size.',
+    {},
+    async () => {
+      const s = await getStats();
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(s, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  return server;
+}
+
+export async function startMcpServer(): Promise<void> {
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

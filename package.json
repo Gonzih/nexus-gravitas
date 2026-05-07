@@ -1,0 +1,39 @@
+{
+  "name": "nexus-temporal-storage",
+  "version": "1.0.0",
+  "description": "Datomic-inspired temporal database for agentic systems, accessed via MCP",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "node --max-old-space-size=4096 node_modules/.bin/tsc --noEmit",
+    "start": "node dist/index.js",
+    "test": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "pg": "8.13.3",
+    "zod": "3.24.4"
+  },
+  "devDependencies": {
+    "@types/jest": "29.5.14",
+    "@types/node": "22.15.3",
+    "@types/pg": "8.11.13",
+    "esbuild": "0.25.4",
+    "jest": "29.7.0",
+    "ts-jest": "29.3.2",
+    "typescript": "5.8.3"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/tests/**/*.test.ts"],
+    "testTimeout": 30000,
+    "moduleNameMapper": {
+      "^(\\.{1,2}/.*)\\.js$": "$1"
+    },
+    "transform": {
+      "^.+\\.tsx?$": ["ts-jest", { "diagnostics": false }]
+    }
+  }
+}
