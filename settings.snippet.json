@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nexus-temporal-storage": {
+      "command": "node",
+      "args": ["/path/to/nexus-temporal-storage/dist/index.js"],
+      "env": {
+        "DATABASE_URL": "postgres://localhost/nexus_temporal"
+      }
+    }
+  }
+}
