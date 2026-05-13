@@ -1,4 +1,14 @@
 import { getPool, getClient } from './db.js';
+import {
+  WEIGHT_INITIAL,
+  WEIGHT_CORROBORATION_DELTA,
+  applyWeightsOnAssert,
+  logWeightEvent,
+  computeEffectiveWeight,
+  WEIGHT_FLOOR,
+  WEIGHT_CEILING,
+  WEIGHT_CONTRADICTION_DELTA,
+} from './weight.js';
 
 export interface Fact {
   op: 'assert' | 'retract';
@@ -23,6 +33,7 @@ export interface Datom {
   tx_id: number;
   retracted: boolean;
   created_at: string;
+  influence_weight: number;
 }
 
 export interface CurrentFact {
@@ -32,6 +43,7 @@ export interface CurrentFact {
   value_ts: string | null;
   tx_id: number;
   tx_at: string;
+  influence_weight: number;
 }
 
 export interface HistoryEntry extends Datom {
@@ -79,6 +91,7 @@ interface RawCurrentFactRow {
   value_ts: Date | null;
   tx_id: string;
   tx_at: Date;
+  influence_weight: string;
 }
 
 interface RawDatomRow {
@@ -91,6 +104,7 @@ interface RawDatomRow {
   tx_id: string;
   retracted: boolean;
   created_at: Date;
+  influence_weight: string;
 }
 
 interface RawHistoryRow extends RawDatomRow {
@@ -116,6 +130,7 @@ function parseCurrentFact(row: RawCurrentFactRow): CurrentFact {
     value_ts: row.value_ts instanceof Date ? row.value_ts.toISOString() : row.value_ts,
     tx_id: parseInt(row.tx_id, 10),
     tx_at: row.tx_at instanceof Date ? row.tx_at.toISOString() : String(row.tx_at),
+    influence_weight: parseFloat(row.influence_weight),
   };
 }
 
@@ -130,6 +145,7 @@ function parseDatom(row: RawDatomRow): Datom {
     tx_id: parseInt(row.tx_id, 10),
     retracted: row.retracted,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+    influence_weight: parseFloat(row.influence_weight),
   };
 }
 
@@ -166,13 +182,66 @@ export async function transact(
     for (const fact of facts) {
       const numVal = tryParseNumber(fact.value);
       const tsVal = tryParseTimestamp(fact.value);
-      const retracted = fact.op === 'retract';
 
-      await client.query(
-        `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId, retracted]
-      );
+      if (fact.op === 'assert') {
+        // Compute weight and detect corroboration/contradiction
+        const weightResult = await applyWeightsOnAssert(
+          client,
+          fact.entity,
+          fact.attribute,
+          fact.value,
+          txId
+        );
+
+        await client.query(
+          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted, influence_weight)
+           VALUES ($1, $2, $3, $4, $5, $6, false, $7)`,
+          [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId, weightResult.newDatomWeight]
+        );
+
+        // Apply contradiction to old datom
+        if (weightResult.contradictedId !== null) {
+          await client.query(
+            `UPDATE datoms SET influence_weight = $1 WHERE id = $2`,
+            [weightResult.contradictedNewWeight, weightResult.contradictedId]
+          );
+          await logWeightEvent(
+            client,
+            fact.entity,
+            fact.attribute,
+            weightResult.contradictedValue!,
+            'contradict',
+            weightResult.contradictedOldWeight!,
+            weightResult.contradictedNewWeight!,
+            txId,
+            agent_id ?? null,
+            note ?? null
+          );
+        }
+
+        // Log weight event for the new assertion or corroboration
+        await logWeightEvent(
+          client,
+          fact.entity,
+          fact.attribute,
+          fact.value,
+          weightResult.eventType,
+          weightResult.eventType === 'corroborate'
+            ? weightResult.newDatomWeight - WEIGHT_CORROBORATION_DELTA
+            : WEIGHT_INITIAL,
+          weightResult.newDatomWeight,
+          txId,
+          agent_id ?? null,
+          note ?? null
+        );
+      } else {
+        // Retract: insert with default weight (1.0), no weight logic needed
+        await client.query(
+          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted)
+           VALUES ($1, $2, $3, $4, $5, $6, true)`,
+          [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId]
+        );
+      }
       count++;
     }
 
@@ -209,6 +278,7 @@ export async function getEntity(
         d.value_ts,
         d.tx_id,
         d.retracted,
+        d.influence_weight,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -216,7 +286,7 @@ export async function getEntity(
       WHERE d.entity = $1
       ${attrFilter}
     )
-    SELECT attribute, value, value_num, value_ts, tx_id, tx_at
+    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY attribute
@@ -285,6 +355,7 @@ export async function queryDatoms(
         d.value_ts,
         d.tx_id,
         d.retracted,
+        d.influence_weight,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.entity, d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -292,7 +363,7 @@ export async function queryDatoms(
       WHERE true
       ${whereClause}
     )
-    SELECT entity, attribute, value, value_num, value_ts, tx_id, tx_at
+    SELECT entity, attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY entity, attribute
@@ -342,6 +413,7 @@ export async function asOf(
         d.value_ts,
         d.tx_id,
         d.retracted,
+        d.influence_weight,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -350,7 +422,7 @@ export async function asOf(
       ${timeFilter}
       ${attrFilter}
     )
-    SELECT attribute, value, value_num, value_ts, tx_id, tx_at
+    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY attribute
@@ -383,6 +455,7 @@ export async function getHistory(
       d.tx_id,
       d.retracted,
       d.created_at,
+      d.influence_weight,
       t.tx_at,
       t.agent_id,
       t.note
@@ -420,6 +493,7 @@ export async function sinceTransaction(
       d.tx_id,
       d.retracted,
       d.created_at,
+      d.influence_weight,
       t.tx_at,
       t.agent_id,
       t.note
@@ -475,7 +549,7 @@ export async function getTransaction(tx_id: number): Promise<TransactionWithDato
   const tx = parseTx(txResult.rows[0]!);
 
   const datomResult = await getPool().query<RawDatomRow>(
-    `SELECT id, entity, attribute, value, value_num, value_ts, tx_id, retracted, created_at
+    `SELECT id, entity, attribute, value, value_num, value_ts, tx_id, retracted, created_at, influence_weight
      FROM datoms WHERE tx_id = $1 ORDER BY id`,
     [tx_id]
   );
@@ -513,7 +587,659 @@ export async function getStats(): Promise<StatsResult> {
   };
 }
 
-// Helpers
+// ─── Semantic analysis types ─────────────────────────────────────────────────
+
+export interface WeightEventRecord {
+  id: number;
+  entity: string;
+  attribute: string;
+  value: string;
+  event_type: 'assert' | 'corroborate' | 'contradict';
+  weight_before: number;
+  weight_after: number;
+  tx_id: number | null;
+  agent_id: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+export type LifecyclePhase = 'ascent' | 'dominance' | 'decay' | 'superseded';
+
+export interface DominanceCurveResult {
+  entity: string;
+  attribute: string;
+  value: string;
+  lifecycle: {
+    phase: LifecyclePhase;
+    current_weight: number;
+    peak_weight: number;
+    peak_tx: number | null;
+    peak_at: string | null;
+    first_asserted_tx: number | null;
+    first_asserted_at: string | null;
+    last_corroboration_tx: number | null;
+    contradiction_tx: number | null;
+  };
+  curve: Array<{
+    tx_id: number | null;
+    at: string;
+    weight: number;
+    event: 'assert' | 'corroborate' | 'contradict';
+  }>;
+}
+
+export interface DominantFactEntry {
+  entity: string;
+  attribute: string;
+  value: string;
+  influence_weight: number;
+  effective_weight: number;
+  tx_id: number;
+  tx_at: string;
+  phase: LifecyclePhase;
+}
+
+export interface AnomalyEntry {
+  entity: string;
+  attribute: string;
+  value: string;
+  anomaly_type: 'fast_ascent' | 'fast_decay' | 'isolated_assertion';
+  severity: 'low' | 'medium' | 'high';
+  description: string;
+  first_asserted_at: string;
+  current_weight: number;
+  corroboration_count: number;
+}
+
+export interface FactDurationResult {
+  entity: string;
+  attribute: string;
+  value: string;
+  asserted_at: string;
+  dominant_from: string | null;
+  dominant_until: string | null;
+  duration_seconds: number | null;
+  is_currently_dominant: boolean;
+  superseded_by: { value: string; tx_id: number; at: string } | null;
+}
+
+// Raw weight event row from pg
+interface RawWeightEventRow {
+  id: string;
+  entity: string;
+  attribute: string;
+  value: string;
+  event_type: string;
+  weight_before: string;
+  weight_after: string;
+  tx_id: string | null;
+  agent_id: string | null;
+  note: string | null;
+  created_at: Date;
+}
+
+function parseWeightEvent(row: RawWeightEventRow): WeightEventRecord {
+  return {
+    id: parseInt(row.id, 10),
+    entity: row.entity,
+    attribute: row.attribute,
+    value: row.value,
+    event_type: row.event_type as WeightEventRecord['event_type'],
+    weight_before: parseFloat(row.weight_before),
+    weight_after: parseFloat(row.weight_after),
+    tx_id: row.tx_id !== null ? parseInt(row.tx_id, 10) : null,
+    agent_id: row.agent_id,
+    note: row.note,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  };
+}
+
+/** Determine lifecycle phase from current state */
+function classifyPhase(
+  currentWeight: number,
+  peakWeight: number,
+  isSuperseded: boolean,
+  lastEventType: string | null
+): LifecyclePhase {
+  if (isSuperseded) return 'superseded';
+  if (currentWeight < peakWeight * 0.8) return 'decay';
+  if (lastEventType === 'corroborate') return 'ascent';
+  return 'dominance';
+}
+
+// ─── New exported functions ───────────────────────────────────────────────────
+
+/**
+ * Explicitly corroborate a fact — increases its influence weight and resets
+ * the decay clock by inserting a new datom with the increased weight.
+ */
+export async function corroborateExplicit(
+  entity: string,
+  attribute: string,
+  value: string,
+  agent_id: string,
+  note?: string
+): Promise<{ entity: string; attribute: string; value: string; old_weight: number; new_weight: number }> {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    // Get current weight from latest non-retracted datom for this triple
+    const existing = await client.query<{ influence_weight: string }>(
+      `SELECT influence_weight
+       FROM datoms
+       WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
+       ORDER BY tx_id DESC, id DESC
+       LIMIT 1`,
+      [entity, attribute, value]
+    );
+    if (existing.rows.length === 0) {
+      throw new Error(`Fact not found: [${entity}, ${attribute}, ${value}]`);
+    }
+
+    const oldWeight = parseFloat(existing.rows[0]!.influence_weight);
+    const newWeight = Math.min(oldWeight + WEIGHT_CORROBORATION_DELTA, WEIGHT_CEILING);
+
+    // Create a new transaction for provenance
+    const txResult = await client.query<RawTxRow>(
+      'INSERT INTO transactions (agent_id, note) VALUES ($1, $2) RETURNING id, tx_at, agent_id, note',
+      [agent_id, note ?? null]
+    );
+    const txRow = txResult.rows[0]!;
+    const txId = parseInt(txRow.id, 10);
+
+    // Insert new datom with updated weight (keeps provenance of who corroborated)
+    const numVal = tryParseNumber(value);
+    const tsVal = tryParseTimestamp(value);
+    await client.query(
+      `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted, influence_weight)
+       VALUES ($1, $2, $3, $4, $5, $6, false, $7)`,
+      [entity, attribute, value, numVal, tsVal, txId, newWeight]
+    );
+
+    await logWeightEvent(
+      client, entity, attribute, value,
+      'corroborate', oldWeight, newWeight,
+      txId, agent_id, note ?? null
+    );
+
+    await client.query('COMMIT');
+    return { entity, attribute, value, old_weight: oldWeight, new_weight: newWeight };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Return the full influence weight history and lifecycle phase for a fact
+ * (or all facts for an entity/attribute combination).
+ */
+export async function getDominanceCurve(
+  entity: string,
+  attribute?: string,
+  value?: string
+): Promise<DominanceCurveResult[]> {
+  // Get distinct (entity, attribute, value) triples to build curves for
+  const params: unknown[] = [entity];
+  let attrFilter = '';
+  let valFilter = '';
+  if (attribute !== undefined) {
+    params.push(attribute);
+    attrFilter = `AND attribute = $${params.length}`;
+  }
+  if (value !== undefined) {
+    params.push(value);
+    valFilter = `AND value = $${params.length}`;
+  }
+
+  const triplesResult = await getPool().query<{ entity: string; attribute: string; value: string }>(
+    `SELECT DISTINCT entity, attribute, value
+     FROM datom_weight_events
+     WHERE entity = $1 ${attrFilter} ${valFilter}
+     ORDER BY attribute, value`,
+    params
+  );
+
+  const results: DominanceCurveResult[] = [];
+
+  for (const triple of triplesResult.rows) {
+    const eventsResult = await getPool().query<RawWeightEventRow>(
+      `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
+              tx_id, agent_id, note, created_at
+       FROM datom_weight_events
+       WHERE entity = $1 AND attribute = $2 AND value = $3
+       ORDER BY created_at ASC, id ASC`,
+      [triple.entity, triple.attribute, triple.value]
+    );
+    const events = eventsResult.rows.map(parseWeightEvent);
+
+    // Latest datom for this triple to get stored weight and its created_at
+    const latestDatom = await getPool().query<{ influence_weight: string; created_at: Date; tx_id: string }>(
+      `SELECT influence_weight, created_at, tx_id
+       FROM datoms
+       WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
+       ORDER BY tx_id DESC, id DESC
+       LIMIT 1`,
+      [triple.entity, triple.attribute, triple.value]
+    );
+
+    const storedWeight = latestDatom.rows.length > 0
+      ? parseFloat(latestDatom.rows[0]!.influence_weight)
+      : WEIGHT_FLOOR;
+    const lastEventAt = latestDatom.rows.length > 0
+      ? (latestDatom.rows[0]!.created_at instanceof Date
+        ? latestDatom.rows[0]!.created_at.toISOString()
+        : String(latestDatom.rows[0]!.created_at))
+      : new Date().toISOString();
+
+    const currentWeight = computeEffectiveWeight(storedWeight, lastEventAt);
+
+    // Compute peak weight from events
+    let peakWeight = WEIGHT_INITIAL;
+    let peakAt: string | null = null;
+    let peakTx: number | null = null;
+    for (const ev of events) {
+      if (ev.weight_after > peakWeight) {
+        peakWeight = ev.weight_after;
+        peakAt = ev.created_at;
+        peakTx = ev.tx_id;
+      }
+    }
+
+    const assertEvent = events.find((e) => e.event_type === 'assert');
+    const lastCorrobEvent = [...events].reverse().find((e) => e.event_type === 'corroborate');
+    const contradictEvent = events.find((e) => e.event_type === 'contradict');
+
+    // Check if superseded: is there a DIFFERENT value currently active for (entity, attribute)?
+    const supersededCheck = await getPool().query<{ value: string }>(
+      `WITH ranked AS (
+         SELECT value, retracted,
+                ROW_NUMBER() OVER (PARTITION BY attribute ORDER BY tx_id DESC, id DESC) AS rn
+         FROM datoms
+         WHERE entity = $1 AND attribute = $2
+       )
+       SELECT value FROM ranked WHERE rn = 1 AND retracted = false AND value != $3`,
+      [triple.entity, triple.attribute, triple.value]
+    );
+    const isSuperseded = supersededCheck.rows.length > 0;
+
+    const lastEventType = events.length > 0 ? events[events.length - 1]!.event_type : null;
+    const phase = classifyPhase(currentWeight, peakWeight, isSuperseded, lastEventType);
+
+    results.push({
+      entity: triple.entity,
+      attribute: triple.attribute,
+      value: triple.value,
+      lifecycle: {
+        phase,
+        current_weight: Math.round(currentWeight * 10000) / 10000,
+        peak_weight: peakWeight,
+        peak_tx: peakTx,
+        peak_at: peakAt,
+        first_asserted_tx: assertEvent?.tx_id ?? null,
+        first_asserted_at: assertEvent?.created_at ?? null,
+        last_corroboration_tx: lastCorrobEvent?.tx_id ?? null,
+        contradiction_tx: contradictEvent?.tx_id ?? null,
+      },
+      curve: events.map((e) => ({
+        tx_id: e.tx_id,
+        at: e.created_at,
+        weight: e.weight_after,
+        event: e.event_type,
+      })),
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Return the currently dominant facts for an entity (or globally),
+ * ranked by effective influence weight above a threshold.
+ */
+export async function getDominantFacts(
+  entity?: string,
+  threshold = 0.7,
+  limit = 50,
+  as_of?: string
+): Promise<DominantFactEntry[]> {
+  const params: unknown[] = [];
+  let entityFilter = '';
+  let timeFilter = '';
+
+  if (entity !== undefined) {
+    params.push(entity);
+    entityFilter = `AND d.entity = $${params.length}`;
+  }
+  if (as_of !== undefined) {
+    params.push(as_of);
+    timeFilter = `AND t.tx_at <= $${params.length}`;
+  }
+
+  const sql = `
+    WITH ranked AS (
+      SELECT
+        d.entity,
+        d.attribute,
+        d.value,
+        d.influence_weight,
+        d.created_at,
+        d.tx_id,
+        d.retracted,
+        t.tx_at,
+        ROW_NUMBER() OVER (PARTITION BY d.entity, d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
+      FROM datoms d
+      JOIN transactions t ON d.tx_id = t.id
+      WHERE true
+      ${entityFilter}
+      ${timeFilter}
+    )
+    SELECT entity, attribute, value, influence_weight, created_at, tx_id, tx_at
+    FROM ranked
+    WHERE rn = 1 AND retracted = false
+    ORDER BY influence_weight DESC
+  `;
+
+  const result = await getPool().query<{
+    entity: string;
+    attribute: string;
+    value: string;
+    influence_weight: string;
+    created_at: Date;
+    tx_id: string;
+    tx_at: Date;
+  }>(sql, params);
+
+  const entries: DominantFactEntry[] = [];
+  for (const row of result.rows) {
+    const storedWeight = parseFloat(row.influence_weight);
+    const createdAt = row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at);
+    const effectiveWeight = computeEffectiveWeight(storedWeight, createdAt);
+
+    if (effectiveWeight < threshold) continue;
+
+    // Determine phase (simplified: no cross-query for supersede check in bulk)
+    let phase: LifecyclePhase = 'dominance';
+    if (effectiveWeight < storedWeight * 0.8) phase = 'decay';
+
+    entries.push({
+      entity: row.entity,
+      attribute: row.attribute,
+      value: row.value,
+      influence_weight: storedWeight,
+      effective_weight: Math.round(effectiveWeight * 10000) / 10000,
+      tx_id: parseInt(row.tx_id, 10),
+      tx_at: row.tx_at instanceof Date ? row.tx_at.toISOString() : String(row.tx_at),
+      phase,
+    });
+
+    if (entries.length >= limit) break;
+  }
+
+  return entries;
+}
+
+/**
+ * Detect facts with anomalous weight trajectories:
+ * fast_ascent, isolated_assertion, fast_decay.
+ */
+export async function detectAnomalies(
+  entity?: string,
+  window_hours = 24
+): Promise<{ anomalies: AnomalyEntry[] }> {
+  const params: unknown[] = [];
+  let entityFilter = '';
+  if (entity !== undefined) {
+    params.push(entity);
+    entityFilter = `AND entity = $${params.length}`;
+  }
+
+  // Get all weight events within the window
+  params.push(window_hours);
+  const windowFilter = `AND created_at >= now() - ($${params.length} || ' hours')::interval`;
+
+  const eventsResult = await getPool().query<RawWeightEventRow>(
+    `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
+            tx_id, agent_id, note, created_at
+     FROM datom_weight_events
+     WHERE true ${entityFilter} ${windowFilter}
+     ORDER BY entity, attribute, value, created_at ASC`,
+    params
+  );
+
+  const events = eventsResult.rows.map(parseWeightEvent);
+
+  // Group by (entity, attribute, value)
+  const byTriple = new Map<string, WeightEventRecord[]>();
+  for (const ev of events) {
+    const key = `${ev.entity}\0${ev.attribute}\0${ev.value}`;
+    const arr = byTriple.get(key);
+    if (arr) {
+      arr.push(ev);
+    } else {
+      byTriple.set(key, [ev]);
+    }
+  }
+
+  const anomalies: AnomalyEntry[] = [];
+
+  for (const [key, evs] of byTriple) {
+    const [tripleEntity, tripleAttribute, tripleValue] = key.split('\0') as [string, string, string];
+    const assertEv = evs.find((e) => e.event_type === 'assert');
+    const corrobEvs = evs.filter((e) => e.event_type === 'corroborate');
+    const contradictEvs = evs.filter((e) => e.event_type === 'contradict');
+
+    // Get current stored weight
+    const latestDatom = await getPool().query<{ influence_weight: string; created_at: Date }>(
+      `SELECT influence_weight, created_at
+       FROM datoms
+       WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
+       ORDER BY tx_id DESC, id DESC LIMIT 1`,
+      [tripleEntity, tripleAttribute, tripleValue]
+    );
+    const storedWeight = latestDatom.rows.length > 0
+      ? parseFloat(latestDatom.rows[0]!.influence_weight)
+      : WEIGHT_FLOOR;
+    const lastAt = latestDatom.rows.length > 0
+      ? (latestDatom.rows[0]!.created_at instanceof Date
+        ? latestDatom.rows[0]!.created_at.toISOString()
+        : String(latestDatom.rows[0]!.created_at))
+      : new Date().toISOString();
+    const currentWeight = computeEffectiveWeight(storedWeight, lastAt);
+    const firstAssertedAt = assertEv?.created_at ?? evs[0]!.created_at;
+
+    // Fast ascent: reached weight >= 1.5 (2+ corroborations) all within 1 hour of assertion
+    if (storedWeight >= 1.5 && assertEv) {
+      const assertTime = new Date(assertEv.created_at).getTime();
+      const allCorrobWithin1h = corrobEvs.every(
+        (e) => new Date(e.created_at).getTime() - assertTime < 3_600_000
+      );
+      if (allCorrobWithin1h && corrobEvs.length >= 1) {
+        const severity: AnomalyEntry['severity'] =
+          storedWeight > 2.5 ? 'high' : storedWeight > 2.0 ? 'medium' : 'low';
+        anomalies.push({
+          entity: tripleEntity,
+          attribute: tripleAttribute,
+          value: tripleValue,
+          anomaly_type: 'fast_ascent',
+          severity,
+          description: `Weight reached ${storedWeight.toFixed(2)} via ${corrobEvs.length} corroboration(s) within 1 hour of assertion`,
+          first_asserted_at: firstAssertedAt,
+          current_weight: Math.round(currentWeight * 10000) / 10000,
+          corroboration_count: corrobEvs.length,
+        });
+      }
+    }
+
+    // Isolated assertion: asserted > 24h ago, no corroborations, weight still high (> 0.7)
+    if (
+      assertEv &&
+      corrobEvs.length === 0 &&
+      currentWeight > 0.7 &&
+      Date.now() - new Date(assertEv.created_at).getTime() > 24 * 3_600_000
+    ) {
+      anomalies.push({
+        entity: tripleEntity,
+        attribute: tripleAttribute,
+        value: tripleValue,
+        anomaly_type: 'isolated_assertion',
+        severity: 'medium',
+        description: `Single-agent assertion with no corroboration after 24+ hours`,
+        first_asserted_at: firstAssertedAt,
+        current_weight: Math.round(currentWeight * 10000) / 10000,
+        corroboration_count: 0,
+      });
+    }
+
+    // Fast decay: a contradiction event reduced weight > 50% within 1 hour
+    for (const contradictEv of contradictEvs) {
+      const pctDrop = (contradictEv.weight_before - contradictEv.weight_after) / contradictEv.weight_before;
+      if (pctDrop > 0.5) {
+        const assertTime = assertEv ? new Date(assertEv.created_at).getTime() : 0;
+        const contradictTime = new Date(contradictEv.created_at).getTime();
+        const hoursToContradict = (contradictTime - assertTime) / 3_600_000;
+        const severity: AnomalyEntry['severity'] = hoursToContradict < 0.5 ? 'high' : 'medium';
+        anomalies.push({
+          entity: tripleEntity,
+          attribute: tripleAttribute,
+          value: tripleValue,
+          anomaly_type: 'fast_decay',
+          severity,
+          description: `Weight dropped ${(pctDrop * 100).toFixed(0)}% due to contradiction (${contradictEv.weight_before.toFixed(2)} → ${contradictEv.weight_after.toFixed(2)})`,
+          first_asserted_at: firstAssertedAt,
+          current_weight: Math.round(currentWeight * 10000) / 10000,
+          corroboration_count: corrobEvs.length,
+        });
+      }
+    }
+  }
+
+  return { anomalies };
+}
+
+/**
+ * Return the effective duration of a fact — the period during which it
+ * was dominant (weight above threshold).
+ */
+export async function getFactDuration(
+  entity: string,
+  attribute: string,
+  value: string,
+  dominance_threshold = 0.7
+): Promise<FactDurationResult> {
+  // Get first assertion event for this triple
+  const assertResult = await getPool().query<RawWeightEventRow>(
+    `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
+            tx_id, agent_id, note, created_at
+     FROM datom_weight_events
+     WHERE entity = $1 AND attribute = $2 AND value = $3 AND event_type = 'assert'
+     ORDER BY created_at ASC
+     LIMIT 1`,
+    [entity, attribute, value]
+  );
+
+  if (assertResult.rows.length === 0) {
+    throw new Error(`No assertion found for [${entity}, ${attribute}, ${value}]`);
+  }
+
+  const firstAssert = parseWeightEvent(assertResult.rows[0]!);
+  const assertedAt = firstAssert.created_at;
+
+  // Get latest datom for current stored weight and created_at (decay clock)
+  const latestDatom = await getPool().query<{
+    influence_weight: string;
+    created_at: Date;
+    tx_id: string;
+  }>(
+    `SELECT influence_weight, created_at, tx_id
+     FROM datoms
+     WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
+     ORDER BY tx_id DESC, id DESC
+     LIMIT 1`,
+    [entity, attribute, value]
+  );
+
+  const storedWeight = latestDatom.rows.length > 0
+    ? parseFloat(latestDatom.rows[0]!.influence_weight)
+    : WEIGHT_FLOOR;
+  const lastEventAt = latestDatom.rows.length > 0
+    ? (latestDatom.rows[0]!.created_at instanceof Date
+      ? latestDatom.rows[0]!.created_at.toISOString()
+      : String(latestDatom.rows[0]!.created_at))
+    : assertedAt;
+
+  const currentEffectiveWeight = computeEffectiveWeight(storedWeight, lastEventAt);
+  const isCurrentlyDominant = currentEffectiveWeight >= dominance_threshold;
+
+  // dominant_from: when weight first crossed threshold
+  // Since initial weight is 1.0 and default threshold is 0.7, it's dominant from assertion
+  const dominantFrom = firstAssert.weight_after >= dominance_threshold ? assertedAt : null;
+
+  // dominant_until: if still dominant, null; else compute when weight crossed below threshold
+  let dominantUntil: string | null = null;
+  if (!isCurrentlyDominant && dominantFrom !== null) {
+    // Find when decay brings stored_weight below threshold from last event
+    // solve: stored_weight * 0.995^hours < threshold
+    // hours = log(threshold / stored_weight) / log(0.995)
+    if (storedWeight > dominance_threshold) {
+      const hoursToThreshold =
+        Math.log(dominance_threshold / storedWeight) / Math.log(0.995);
+      const crossTime = new Date(lastEventAt).getTime() + hoursToThreshold * 3_600_000;
+      dominantUntil = new Date(crossTime).toISOString();
+    } else {
+      // Weight was already at or below threshold from last stored event
+      dominantUntil = lastEventAt;
+    }
+  }
+
+  // duration_seconds
+  let durationSeconds: number | null = null;
+  if (dominantFrom !== null) {
+    const endTime = dominantUntil ? new Date(dominantUntil).getTime() : Date.now();
+    durationSeconds = Math.round((endTime - new Date(dominantFrom).getTime()) / 1000);
+  }
+
+  // superseded_by: find a different value currently active for (entity, attribute)
+  const supersededResult = await getPool().query<{ value: string; tx_id: string; tx_at: Date }>(
+    `WITH ranked AS (
+       SELECT d.value, d.tx_id, d.retracted,
+              t.tx_at,
+              ROW_NUMBER() OVER (PARTITION BY d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
+       FROM datoms d
+       JOIN transactions t ON d.tx_id = t.id
+       WHERE d.entity = $1 AND d.attribute = $2
+     )
+     SELECT value, tx_id, tx_at FROM ranked WHERE rn = 1 AND retracted = false AND value != $3`,
+    [entity, attribute, value]
+  );
+
+  const supersededBy = supersededResult.rows.length > 0
+    ? {
+        value: supersededResult.rows[0]!.value,
+        tx_id: parseInt(supersededResult.rows[0]!.tx_id, 10),
+        at: supersededResult.rows[0]!.tx_at instanceof Date
+          ? supersededResult.rows[0]!.tx_at.toISOString()
+          : String(supersededResult.rows[0]!.tx_at),
+      }
+    : null;
+
+  return {
+    entity,
+    attribute,
+    value,
+    asserted_at: assertedAt,
+    dominant_from: dominantFrom,
+    dominant_until: dominantUntil,
+    duration_seconds: durationSeconds,
+    is_currently_dominant: isCurrentlyDominant,
+    superseded_by: supersededBy,
+  };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function tryParseNumber(value: string): number | null {
   const n = Number(value);

@@ -103,6 +103,34 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS datoms_txid ON datoms (tx_id)
     `);
 
+    // Influence weight for semantic analysis
+    await client.query(`
+      ALTER TABLE datoms ADD COLUMN IF NOT EXISTS influence_weight FLOAT NOT NULL DEFAULT 1.0
+    `);
+
+    // Weight event log for dominance curves and anomaly detection
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS datom_weight_events (
+        id           BIGSERIAL PRIMARY KEY,
+        entity       TEXT NOT NULL,
+        attribute    TEXT NOT NULL,
+        value        TEXT NOT NULL,
+        event_type   TEXT NOT NULL,
+        weight_before FLOAT NOT NULL,
+        weight_after  FLOAT NOT NULL,
+        tx_id        BIGINT REFERENCES transactions(id),
+        agent_id     TEXT,
+        note         TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS dwe_eavidx ON datom_weight_events (entity, attribute, value, created_at)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS dwe_eidx ON datom_weight_events (entity, created_at)
+    `);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
