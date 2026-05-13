@@ -1,6 +1,6 @@
 {
   "name": "nexus-temporal-storage",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Datomic-inspired temporal database for agentic systems, accessed via MCP",
   "main": "dist/index.js",
   "scripts": {
@@ -27,13 +27,20 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/tests/**/*.test.ts"],
+    "testMatch": [
+      "**/tests/**/*.test.ts"
+    ],
     "testTimeout": 30000,
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
-      "^.+\\.tsx?$": ["ts-jest", { "diagnostics": false }]
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "diagnostics": false
+        }
+      ]
     }
   }
 }
