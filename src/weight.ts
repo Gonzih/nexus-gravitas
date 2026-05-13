@@ -13,7 +13,7 @@ export const DECAY_RATE = 0.995; // per hour
 
 /**
  * Apply passive hourly decay to a stored weight.
- * Uses the created_at of the latest datom for this triple as the decay clock.
+ * Uses the created_at of the latest gravit for this triple as the decay clock.
  */
 export function computeEffectiveWeight(
   storedWeight: number,
@@ -37,11 +37,11 @@ interface WeightResult {
 }
 
 /**
- * Compute the influence weight for a new assertion datom and identify any
- * contradictions to apply to older datoms.
+ * Compute the influence weight for a new assertion gravit and identify any
+ * contradictions to apply to older gravita.
  *
- * Must be called BEFORE inserting the new datom, within an open transaction.
- * Uses tx_id < currentTxId to ignore datoms from the same in-flight transaction.
+ * Must be called BEFORE inserting the new gravit, within an open transaction.
+ * Uses tx_id < currentTxId to ignore gravita from the same in-flight transaction.
  */
 export async function applyWeightsOnAssert(
   client: PoolClient,
@@ -118,7 +118,7 @@ export async function applyWeightsOnAssert(
 }
 
 /**
- * Log a weight event into datom_weight_events.
+ * Log a weight event into gravitWeightEvents (SQL table: datom_weight_events).
  */
 export async function logWeightEvent(
   client: PoolClient,

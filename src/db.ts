@@ -55,7 +55,8 @@ export async function runMigrations(): Promise<void> {
 
     if (vectorAvailable) {
       await client.query(`
-        CREATE TABLE IF NOT EXISTS datoms (
+        CREATE TABLE IF NOT EXISTS datoms -- gravita (formerly datoms)
+        (
           id          BIGSERIAL PRIMARY KEY,
           entity      TEXT NOT NULL,
           attribute   TEXT NOT NULL,
@@ -76,7 +77,8 @@ export async function runMigrations(): Promise<void> {
       `);
     } else {
       await client.query(`
-        CREATE TABLE IF NOT EXISTS datoms (
+        CREATE TABLE IF NOT EXISTS datoms -- gravita (formerly datoms)
+        (
           id          BIGSERIAL PRIMARY KEY,
           entity      TEXT NOT NULL,
           attribute   TEXT NOT NULL,
@@ -109,6 +111,7 @@ export async function runMigrations(): Promise<void> {
     `);
 
     // Weight event log for dominance curves and anomaly detection
+    // gravitWeightEvents (SQL table: datom_weight_events)
     await client.query(`
       CREATE TABLE IF NOT EXISTS datom_weight_events (
         id           BIGSERIAL PRIMARY KEY,
