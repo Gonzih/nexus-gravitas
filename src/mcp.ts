@@ -18,6 +18,10 @@ import {
   getDominantFacts,
   detectAnomalies,
   getFactDuration,
+  getFactsAt,
+  getFactsDuring,
+  getSourceTrust,
+  upsertSource,
 } from './gravita.js';
 
 const FactSchema = z.object({
@@ -25,6 +29,18 @@ const FactSchema = z.object({
   entity: z.string().min(1),
   attribute: z.string().min(1),
   value: z.string(),
+  valid_from: z.string().optional().describe(
+    'ISO 8601: when this fact starts being true in the world (null = open-ended start)'
+  ),
+  valid_until: z.string().optional().describe(
+    'ISO 8601: when this fact stops being true in the world (null = open-ended end)'
+  ),
+  authored_at: z.string().optional().describe(
+    'ISO 8601: when the source system originally recorded this fact'
+  ),
+  source_id: z.string().optional().describe(
+    'Identifier of the source system that asserted this fact'
+  ),
 });
 
 export function createMcpServer(): McpServer {
@@ -388,6 +404,76 @@ export function createMcpServer(): McpServer {
     },
     async ({ entity, attribute, value, dominance_threshold }) => {
       const result = await getFactDuration(entity, attribute, value, dominance_threshold);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_facts_at ────────────────────────────────────────────────────────────
+  server.tool(
+    'get_facts_at',
+    'Return all non-retracted gravita for (entity, attribute) whose valid interval contains the given point in time. Filters on valid_from ≤ point ≤ valid_until (null = open-ended).',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z.string().min(1).describe('Attribute name'),
+      point_in_time: z.string().describe('ISO 8601 timestamp — the point in world-time to query'),
+    },
+    async ({ entity, attribute, point_in_time }) => {
+      const result = await getFactsAt(entity, attribute, point_in_time);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_facts_during ────────────────────────────────────────────────────────
+  server.tool(
+    'get_facts_during',
+    'Return all non-retracted gravita for (entity, attribute) whose valid interval overlaps the query period [period_start, period_end] (Allen interval overlap).',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z.string().min(1).describe('Attribute name'),
+      period_start: z.string().describe('ISO 8601 timestamp — start of query period'),
+      period_end: z.string().describe('ISO 8601 timestamp — end of query period'),
+    },
+    async ({ entity, attribute, period_start, period_end }) => {
+      const result = await getFactsDuring(entity, attribute, period_start, period_end);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_source_trust ────────────────────────────────────────────────────────
+  server.tool(
+    'get_source_trust',
+    'Return the trust metadata (name, trust_weight) for a registered source, or null if the source is not in the registry.',
+    {
+      source_id: z.string().min(1).describe('Source identifier to look up'),
+    },
+    async ({ source_id }) => {
+      const result = await getSourceTrust(source_id);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── upsert_source ───────────────────────────────────────────────────────────
+  server.tool(
+    'upsert_source',
+    'Create or update a source in the registry. trust_weight scales the effective influence of all gravita from this source (default 1.0; range 0–∞).',
+    {
+      id: z.string().min(1).describe('Source identifier (must be unique)'),
+      name: z.string().min(1).describe('Human-readable name for the source'),
+      trust_weight: z
+        .number()
+        .min(0)
+        .describe('Trust multiplier for this source (1.0 = neutral; <1 = distrust; >1 = trusted)'),
+    },
+    async ({ id, name, trust_weight }) => {
+      const result = await upsertSource(id, name, trust_weight);
       return {
         content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };

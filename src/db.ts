@@ -134,6 +134,40 @@ export async function runMigrations(): Promise<void> {
       CREATE INDEX IF NOT EXISTS dwe_eidx ON datom_weight_events (entity, created_at)
     `);
 
+    // ── Bitemporal columns on datoms ──────────────────────────────────────────
+    // valid_from / valid_until: when the fact held in the world (nullable = open-ended)
+    // authored_at:              when the source originally recorded the fact
+    // source_id:                which source system/agent asserted the fact
+    await client.query(`
+      ALTER TABLE datoms ADD COLUMN IF NOT EXISTS valid_from  TIMESTAMPTZ
+    `);
+    await client.query(`
+      ALTER TABLE datoms ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ
+    `);
+    await client.query(`
+      ALTER TABLE datoms ADD COLUMN IF NOT EXISTS authored_at TIMESTAMPTZ
+    `);
+    await client.query(`
+      ALTER TABLE datoms ADD COLUMN IF NOT EXISTS source_id   TEXT
+    `);
+
+    // Index to accelerate valid-time range queries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS datoms_valid_time ON datoms (valid_from, valid_until)
+    `);
+
+    // ── Source registry ───────────────────────────────────────────────────────
+    // gravita_sources: tracks external sources and their trust weights.
+    // No FK from datoms.source_id so facts can be inserted before registering a source.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS gravita_sources (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        trust_weight FLOAT NOT NULL DEFAULT 1.0,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

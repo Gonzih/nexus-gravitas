@@ -15,6 +15,14 @@ export interface Fact {
   entity: string;
   attribute: string;
   value: string;
+  /** ISO 8601: when this fact starts being true in the world (null = open-ended start) */
+  valid_from?: string;
+  /** ISO 8601: when this fact stops being true in the world (null = open-ended end) */
+  valid_until?: string;
+  /** ISO 8601: when the source system originally recorded this fact */
+  authored_at?: string;
+  /** Identifier of the source system that asserted this fact */
+  source_id?: string;
 }
 
 export interface TransactResult {
@@ -34,6 +42,10 @@ export interface Gravit {
   retracted: boolean;
   created_at: string;
   influence_weight: number;
+  valid_from: string | null;
+  valid_until: string | null;
+  authored_at: string | null;
+  source_id: string | null;
 }
 
 export interface CurrentFact {
@@ -44,6 +56,10 @@ export interface CurrentFact {
   tx_id: number;
   tx_at: string;
   influence_weight: number;
+  valid_from: string | null;
+  valid_until: string | null;
+  authored_at: string | null;
+  source_id: string | null;
 }
 
 export interface HistoryEntry extends Gravit {
@@ -92,6 +108,10 @@ interface RawCurrentFactRow {
   tx_id: string;
   tx_at: Date;
   influence_weight: string;
+  valid_from: Date | null;
+  valid_until: Date | null;
+  authored_at: Date | null;
+  source_id: string | null;
 }
 
 interface RawGravitRow {
@@ -105,6 +125,10 @@ interface RawGravitRow {
   retracted: boolean;
   created_at: Date;
   influence_weight: string;
+  valid_from: Date | null;
+  valid_until: Date | null;
+  authored_at: Date | null;
+  source_id: string | null;
 }
 
 interface RawHistoryRow extends RawGravitRow {
@@ -131,6 +155,10 @@ function parseCurrentFact(row: RawCurrentFactRow): CurrentFact {
     tx_id: parseInt(row.tx_id, 10),
     tx_at: row.tx_at instanceof Date ? row.tx_at.toISOString() : String(row.tx_at),
     influence_weight: parseFloat(row.influence_weight),
+    valid_from: row.valid_from instanceof Date ? row.valid_from.toISOString() : row.valid_from ?? null,
+    valid_until: row.valid_until instanceof Date ? row.valid_until.toISOString() : row.valid_until ?? null,
+    authored_at: row.authored_at instanceof Date ? row.authored_at.toISOString() : row.authored_at ?? null,
+    source_id: row.source_id ?? null,
   };
 }
 
@@ -146,6 +174,10 @@ function parseGravit(row: RawGravitRow): Gravit {
     retracted: row.retracted,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
     influence_weight: parseFloat(row.influence_weight),
+    valid_from: row.valid_from instanceof Date ? row.valid_from.toISOString() : row.valid_from ?? null,
+    valid_until: row.valid_until instanceof Date ? row.valid_until.toISOString() : row.valid_until ?? null,
+    authored_at: row.authored_at instanceof Date ? row.authored_at.toISOString() : row.authored_at ?? null,
+    source_id: row.source_id ?? null,
   };
 }
 
@@ -194,9 +226,14 @@ export async function transact(
         );
 
         await client.query(
-          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted, influence_weight)
-           VALUES ($1, $2, $3, $4, $5, $6, false, $7)`,
-          [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId, weightResult.newDatomWeight]
+          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted, influence_weight, valid_from, valid_until, authored_at, source_id)
+           VALUES ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10, $11)`,
+          [
+            fact.entity, fact.attribute, fact.value, numVal, tsVal, txId,
+            weightResult.newDatomWeight,
+            fact.valid_from ?? null, fact.valid_until ?? null,
+            fact.authored_at ?? null, fact.source_id ?? null,
+          ]
         );
 
         // Apply contradiction to old gravit
@@ -237,9 +274,13 @@ export async function transact(
       } else {
         // Retract: insert with default weight (1.0), no weight logic needed
         await client.query(
-          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted)
-           VALUES ($1, $2, $3, $4, $5, $6, true)`,
-          [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId]
+          `INSERT INTO datoms (entity, attribute, value, value_num, value_ts, tx_id, retracted, valid_from, valid_until, authored_at, source_id)
+           VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8, $9, $10)`,
+          [
+            fact.entity, fact.attribute, fact.value, numVal, tsVal, txId,
+            fact.valid_from ?? null, fact.valid_until ?? null,
+            fact.authored_at ?? null, fact.source_id ?? null,
+          ]
         );
       }
       count++;
@@ -279,6 +320,10 @@ export async function getEntity(
         d.tx_id,
         d.retracted,
         d.influence_weight,
+        d.valid_from,
+        d.valid_until,
+        d.authored_at,
+        d.source_id,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -286,7 +331,8 @@ export async function getEntity(
       WHERE d.entity = $1
       ${attrFilter}
     )
-    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
+    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight,
+           valid_from, valid_until, authored_at, source_id
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY attribute
@@ -356,6 +402,10 @@ export async function queryGravita(
         d.tx_id,
         d.retracted,
         d.influence_weight,
+        d.valid_from,
+        d.valid_until,
+        d.authored_at,
+        d.source_id,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.entity, d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -363,7 +413,8 @@ export async function queryGravita(
       WHERE true
       ${whereClause}
     )
-    SELECT entity, attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
+    SELECT entity, attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight,
+           valid_from, valid_until, authored_at, source_id
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY entity, attribute
@@ -414,6 +465,10 @@ export async function asOf(
         d.tx_id,
         d.retracted,
         d.influence_weight,
+        d.valid_from,
+        d.valid_until,
+        d.authored_at,
+        d.source_id,
         t.tx_at,
         ROW_NUMBER() OVER (PARTITION BY d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
@@ -422,7 +477,8 @@ export async function asOf(
       ${timeFilter}
       ${attrFilter}
     )
-    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight
+    SELECT attribute, value, value_num, value_ts, tx_id, tx_at, influence_weight,
+           valid_from, valid_until, authored_at, source_id
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY attribute
@@ -456,6 +512,10 @@ export async function getHistory(
       d.retracted,
       d.created_at,
       d.influence_weight,
+      d.valid_from,
+      d.valid_until,
+      d.authored_at,
+      d.source_id,
       t.tx_at,
       t.agent_id,
       t.note
@@ -494,6 +554,10 @@ export async function sinceTransaction(
       d.retracted,
       d.created_at,
       d.influence_weight,
+      d.valid_from,
+      d.valid_until,
+      d.authored_at,
+      d.source_id,
       t.tx_at,
       t.agent_id,
       t.note
@@ -549,7 +613,8 @@ export async function getTransaction(tx_id: number): Promise<TransactionWithGrav
   const tx = parseTx(txResult.rows[0]!);
 
   const gravitResult = await getPool().query<RawGravitRow>(
-    `SELECT id, entity, attribute, value, value_num, value_ts, tx_id, retracted, created_at, influence_weight
+    `SELECT id, entity, attribute, value, value_num, value_ts, tx_id, retracted, created_at, influence_weight,
+            valid_from, valid_until, authored_at, source_id
      FROM datoms WHERE tx_id = $1 ORDER BY id`,
     [tx_id]
   );
@@ -637,6 +702,8 @@ export interface DominantFactEntry {
   tx_id: number;
   tx_at: string;
   phase: LifecyclePhase;
+  source_id: string | null;
+  source_trust: number;
 }
 
 export interface AnomalyEntry {
@@ -818,12 +885,19 @@ export async function getDominanceCurve(
     );
     const events = eventsResult.rows.map(parseWeightEvent);
 
-    // Latest gravit for this triple to get stored weight and its created_at
-    const latestGravit = await getPool().query<{ influence_weight: string; created_at: Date; tx_id: string }>(
-      `SELECT influence_weight, created_at, tx_id
-       FROM datoms
-       WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
-       ORDER BY tx_id DESC, id DESC
+    // Latest gravit for this triple to get stored weight, its created_at, and source trust
+    const latestGravit = await getPool().query<{
+      influence_weight: string;
+      created_at: Date;
+      tx_id: string;
+      source_trust: string;
+    }>(
+      `SELECT d.influence_weight, d.created_at, d.tx_id,
+              COALESCE(s.trust_weight, 1.0) AS source_trust
+       FROM datoms d
+       LEFT JOIN gravita_sources s ON d.source_id = s.id
+       WHERE d.entity = $1 AND d.attribute = $2 AND d.value = $3 AND d.retracted = false
+       ORDER BY d.tx_id DESC, d.id DESC
        LIMIT 1`,
       [triple.entity, triple.attribute, triple.value]
     );
@@ -831,13 +905,16 @@ export async function getDominanceCurve(
     const storedWeight = latestGravit.rows.length > 0
       ? parseFloat(latestGravit.rows[0]!.influence_weight)
       : WEIGHT_FLOOR;
+    const sourceTrust = latestGravit.rows.length > 0
+      ? parseFloat(latestGravit.rows[0]!.source_trust)
+      : 1.0;
     const lastEventAt = latestGravit.rows.length > 0
       ? (latestGravit.rows[0]!.created_at instanceof Date
         ? latestGravit.rows[0]!.created_at.toISOString()
         : String(latestGravit.rows[0]!.created_at))
       : new Date().toISOString();
 
-    const currentWeight = computeEffectiveWeight(storedWeight, lastEventAt);
+    const currentWeight = computeEffectiveWeight(storedWeight, lastEventAt) * sourceTrust;
 
     // Compute peak weight from events
     let peakWeight = WEIGHT_INITIAL;
@@ -931,15 +1008,18 @@ export async function getDominantFacts(
         d.created_at,
         d.tx_id,
         d.retracted,
+        d.source_id,
         t.tx_at,
+        COALESCE(s.trust_weight, 1.0) AS source_trust,
         ROW_NUMBER() OVER (PARTITION BY d.entity, d.attribute ORDER BY d.tx_id DESC, d.id DESC) AS rn
       FROM datoms d
       JOIN transactions t ON d.tx_id = t.id
+      LEFT JOIN gravita_sources s ON d.source_id = s.id
       WHERE true
       ${entityFilter}
       ${timeFilter}
     )
-    SELECT entity, attribute, value, influence_weight, created_at, tx_id, tx_at
+    SELECT entity, attribute, value, influence_weight, created_at, tx_id, tx_at, source_id, source_trust
     FROM ranked
     WHERE rn = 1 AND retracted = false
     ORDER BY influence_weight DESC
@@ -953,19 +1033,22 @@ export async function getDominantFacts(
     created_at: Date;
     tx_id: string;
     tx_at: Date;
+    source_id: string | null;
+    source_trust: string;
   }>(sql, params);
 
   const entries: DominantFactEntry[] = [];
   for (const row of result.rows) {
     const storedWeight = parseFloat(row.influence_weight);
+    const sourceTrust = parseFloat(row.source_trust);
     const createdAt = row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at);
-    const effectiveWeight = computeEffectiveWeight(storedWeight, createdAt);
+    const effectiveWeight = computeEffectiveWeight(storedWeight, createdAt) * sourceTrust;
 
     if (effectiveWeight < threshold) continue;
 
     // Determine phase (simplified: no cross-query for supersede check in bulk)
     let phase: LifecyclePhase = 'dominance';
-    if (effectiveWeight < storedWeight * 0.8) phase = 'decay';
+    if (effectiveWeight < storedWeight * sourceTrust * 0.8) phase = 'decay';
 
     entries.push({
       entity: row.entity,
@@ -976,6 +1059,8 @@ export async function getDominantFacts(
       tx_id: parseInt(row.tx_id, 10),
       tx_at: row.tx_at instanceof Date ? row.tx_at.toISOString() : String(row.tx_at),
       phase,
+      source_id: row.source_id,
+      source_trust: sourceTrust,
     });
 
     if (entries.length >= limit) break;
@@ -1240,6 +1325,144 @@ export async function getFactDuration(
     is_currently_dominant: isCurrentlyDominant,
     superseded_by: supersededBy,
   };
+}
+
+// ─── Bitemporal queries ───────────────────────────────────────────────────────
+
+/**
+ * Return all non-retracted gravita for (entity, attribute) whose valid interval
+ * contains `point_in_time`. Null valid_from means "valid from beginning of time";
+ * null valid_until means "valid indefinitely".
+ */
+export async function getFactsAt(
+  entity: string,
+  attribute: string,
+  point_in_time: string
+): Promise<HistoryEntry[]> {
+  const sql = `
+    SELECT
+      d.id,
+      d.entity,
+      d.attribute,
+      d.value,
+      d.value_num,
+      d.value_ts,
+      d.tx_id,
+      d.retracted,
+      d.created_at,
+      d.influence_weight,
+      d.valid_from,
+      d.valid_until,
+      d.authored_at,
+      d.source_id,
+      t.tx_at,
+      t.agent_id,
+      t.note
+    FROM datoms d
+    JOIN transactions t ON d.tx_id = t.id
+    WHERE d.entity = $1
+      AND d.attribute = $2
+      AND d.retracted = false
+      AND (d.valid_from IS NULL OR d.valid_from <= $3::timestamptz)
+      AND (d.valid_until IS NULL OR d.valid_until >= $3::timestamptz)
+    ORDER BY d.tx_id ASC, d.id ASC
+  `;
+  const result = await getPool().query<RawHistoryRow>(sql, [entity, attribute, point_in_time]);
+  return result.rows.map(parseHistoryEntry);
+}
+
+/**
+ * Return all non-retracted gravita for (entity, attribute) whose valid interval
+ * overlaps the query period [period_start, period_end] (Allen interval overlap).
+ * A fact overlaps if it starts before or at period_end AND ends after or at period_start.
+ */
+export async function getFactsDuring(
+  entity: string,
+  attribute: string,
+  period_start: string,
+  period_end: string
+): Promise<HistoryEntry[]> {
+  const sql = `
+    SELECT
+      d.id,
+      d.entity,
+      d.attribute,
+      d.value,
+      d.value_num,
+      d.value_ts,
+      d.tx_id,
+      d.retracted,
+      d.created_at,
+      d.influence_weight,
+      d.valid_from,
+      d.valid_until,
+      d.authored_at,
+      d.source_id,
+      t.tx_at,
+      t.agent_id,
+      t.note
+    FROM datoms d
+    JOIN transactions t ON d.tx_id = t.id
+    WHERE d.entity = $1
+      AND d.attribute = $2
+      AND d.retracted = false
+      AND (d.valid_from IS NULL OR d.valid_from <= $4::timestamptz)
+      AND (d.valid_until IS NULL OR d.valid_until >= $3::timestamptz)
+    ORDER BY d.tx_id ASC, d.id ASC
+  `;
+  const result = await getPool().query<RawHistoryRow>(sql, [entity, attribute, period_start, period_end]);
+  return result.rows.map(parseHistoryEntry);
+}
+
+// ─── Source trust ─────────────────────────────────────────────────────────────
+
+export interface GravitaSource {
+  id: string;
+  name: string;
+  trust_weight: number;
+  created_at: string;
+}
+
+interface RawGravitaSourceRow {
+  id: string;
+  name: string;
+  trust_weight: string;
+  created_at: Date;
+}
+
+function parseGravitaSource(row: RawGravitaSourceRow): GravitaSource {
+  return {
+    id: row.id,
+    name: row.name,
+    trust_weight: parseFloat(row.trust_weight),
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+  };
+}
+
+/** Return the trust metadata for a source, or null if not registered. */
+export async function getSourceTrust(source_id: string): Promise<GravitaSource | null> {
+  const result = await getPool().query<RawGravitaSourceRow>(
+    `SELECT id, name, trust_weight, created_at FROM gravita_sources WHERE id = $1`,
+    [source_id]
+  );
+  if (result.rows.length === 0) return null;
+  return parseGravitaSource(result.rows[0]!);
+}
+
+/** Create or update a source registry entry. */
+export async function upsertSource(
+  id: string,
+  name: string,
+  trust_weight: number
+): Promise<GravitaSource> {
+  const result = await getPool().query<RawGravitaSourceRow>(
+    `INSERT INTO gravita_sources (id, name, trust_weight)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, trust_weight = EXCLUDED.trust_weight
+     RETURNING id, name, trust_weight, created_at`,
+    [id, name, trust_weight]
+  );
+  return parseGravitaSource(result.rows[0]!);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

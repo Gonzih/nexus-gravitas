@@ -1,42 +1,35 @@
-# Plan: Rename datom → gravit, Package → nexus-gravitas
+# Plan: Bitemporal Support for nexus-gravitas
 
 ## Task Restatement
+Add three independent time axes to every gravit:
+1. `valid_from` / `valid_until` — when the fact held in the world (nullable = open-ended)
+2. `authored_at` — when the source originally recorded it
+3. `tx` — already exists (transaction time: when it entered our system)
 
-Rename all terminology from datom/datoms/Datom to gravit/gravita/Gravit throughout
-the codebase. Rename package from nexus-temporal-storage to nexus-gravitas.
-The system is now named "Gravitas" — after the GSV in Iain M. Banks' *Excession*.
-
-## Naming Rules
-
-- `datom` → `gravit`
-- `datoms` → `gravita`
-- `Datom` (TypeScript type) → `Gravit`
-- `RawDatomRow` → `RawGravitRow`
-- `TransactionWithDatoms` → `TransactionWithGravita`
-- SQL table `datoms` → KEEP AS-IS (safe migration), add SQL comment
-- SQL table `datom_weight_events` → KEEP AS-IS, add TS alias comment
-- `nexus-temporal-storage` → `nexus-gravitas`
-
-## Files to Touch
-
-- `src/datoms.ts` → rename to `src/gravita.ts` (all type/function/variable renames)
-- `src/mcp.ts` — import path, function names, tool descriptions, server name
-- `src/db.ts` — comments only, add `-- gravita (formerly datoms)` SQL comment
-- `src/weight.ts` — comments only
-- `tests/datoms.test.ts` → rename to `tests/gravita.test.ts`
-- `tests/mcp.test.ts` — import path update
-- `tests/weight.test.ts` — import path update, describe text
-- `README.md` — full rewrite with new title, subtitle, Banks quote
-- `package.json` — name, description
-- `settings.snippet.json` — package name reference
+Plus a `gravita_sources` table for source trust, which feeds into effective weight computation.
 
 ## Approach
 
-Direct file-by-file rename. No abstraction needed — pure find-replace with judgment.
+**Chosen: Additive, migration-safe schema extension with TypeScript propagation**
+
+- `ALTER TABLE datoms ADD COLUMN IF NOT EXISTS` for all new columns — safe for existing data
+- New `gravita_sources` table with no FK from `datoms.source_id` — insert order flexible
+- Extend `Fact` interface with optional fields so `transact()` accepts and passes them through
+- New functions in `gravita.ts`: `getFactsAt`, `getFactsDuring`, `upsertSource`, `getSourceTrust`
+- Update `getDominantFacts` and `getDominanceCurve` to LEFT JOIN `gravita_sources` and multiply trust
+- New MCP tools: `get_facts_at`, `get_facts_during`, `get_source_trust`, `upsert_source`
+
+Alternatives considered:
+- Separate "valid_time" table: more normalized but more complex joins, no benefit here
+- FK constraint on source_id: more integrity but prevents inserting facts before registering source
+
+## Files to Touch
+- `src/db.ts` — ALTER TABLE migrations + CREATE gravita_sources + index
+- `src/gravita.ts` — type extensions, parse updates, new functions, updated queries
+- `src/mcp.ts` — new tools, updated FactSchema
+- `tests/bitemporal.test.ts` — new integration test file
 
 ## Risks
-
-- `total_datoms` field in StatsResult and SQL alias: rename to `total_gravita`
-- `datoms` field in TransactionWithDatoms: rename to `gravita` in TransactionWithGravita
-- All callers of these APIs must be updated (mcp.ts returns JSON, so field names change)
-- Build must pass after rename — no forgotten import paths
+- All existing SELECT queries that return Gravit/CurrentFact/HistoryEntry need 4 new columns; missing one causes TypeScript mismatch or runtime undefined
+- `getDominantFacts` sorts by `influence_weight DESC` in SQL before source trust is applied in TS; ordering is approximate — acceptable
+- Test isolation: new test file must truncate `gravita_sources` in beforeAll
