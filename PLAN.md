@@ -1,51 +1,46 @@
-# PLAN: nexus-temporal-storage
+# Plan: Temporal Semantic Analysis
 
 ## Task Restatement
-Build a Datomic-inspired temporal database for agentic systems. Every fact is a datom [entity, attribute, value, tx_id]. Nothing is ever updated or deleted — retractions add a new datom with retracted=true. Time-travel is native. The system is accessed exclusively via MCP stdio transport.
 
-## Approach Considered
+Extend the existing EAV(T) datom model with an influence weight system that tracks how "dominant" each fact is over time. Facts start at weight 1.0, gain weight when corroborated by other agents, lose weight when contradicted, and passively decay. New MCP tools expose dominance curves, fact duration, and anomaly detection.
 
-### Option A: Use JSONB for values (research spec approach)
-- Pro: flexible typed values (numbers, arrays, objects stored natively)
-- Con: the task prompt specifies a flat schema with TEXT + typed columns, not JSONB
+## Approaches Considered
 
-### Option B: Use the schema from the task prompt (TEXT + value_num + value_ts + value_vec)
-- Pro: matches the exact schema specified in the task
-- Pro: value_vec enables semantic search via pgvector
-- Con: less flexible for complex values
+### A) Mutable weight column only (no event log)
+Store `influence_weight` on datoms, UPDATE it in place. Simple but no history — can't build dominance curves or detect anomalies. Rejected.
 
-### Option C: Hybrid — JSONB primary with typed sidecars
-- Con: over-engineering beyond the spec
+### B) Separate immutable event log + mutable weight on datoms (chosen)
+- `influence_weight FLOAT DEFAULT 1.0` on datoms: holds the CURRENT stored weight (updated on contradiction)
+- `datom_weight_events` table: append-only log of all weight change events (assert/corroborate/contradict)
+- Passive decay: computed on read using `weight * 0.995^hours_since_last_event`, not stored
+- For corroborations: insert a NEW datom at increased weight (provenance + the window function returns the latest weight as "current")
+- For contradictions: insert new datom at 1.0 AND UPDATE the old conflicting datom's weight (subtract 0.4)
 
-**Decision: Option B** — implement exactly what the task prompt specifies. The schema is clear and complete.
+### C) Fully append-only weight event sourcing
+Store ALL weight changes as events; compute current weight by replaying. Clean but expensive to query.
+Rejected for query complexity.
+
+## Chosen Approach: B
 
 ## Files to Touch
-- `package.json` — dependencies, scripts
-- `tsconfig.json` — TypeScript config
-- `src/db.ts` — PostgreSQL connection + schema migration
-- `src/datoms.ts` — core EAV(T) operations
-- `src/mcp.ts` — MCP server wiring all tools
-- `src/index.ts` — entrypoint
-- `tests/datoms.test.ts` — unit/integration tests
-- `tests/mcp.test.ts` — MCP tool integration tests
-- `README.md` — usage docs
-- `settings.snippet.json` — MCP config snippet
 
-## MCP Tools to Implement
-1. `transact(facts, agent_id?, note?)` → `{tx_id, tx_at, count}`
-2. `get(entity, attribute?)` → current facts (latest non-retracted per attribute)
-3. `find(attribute, value)` → entities currently having attribute=value
-4. `query(entity_pattern?, attribute?, since?)` → filtered current datoms
-5. `as_of(entity, tx_id?, timestamp?, attribute?)` → entity state at past point
-6. `history(entity, attribute?)` → full timeline including retractions
-7. `since(tx_id, entity_pattern?)` → all datoms added after tx
-8. `list_entities(attribute_filter?)` → distinct entities
-9. `list_attributes()` → distinct attributes + usage count
-10. `get_transaction(tx_id)` → tx metadata + datoms
-11. `stats()` → total counts + DB size
+- `src/db.ts` — new migrations: `influence_weight` column + `datom_weight_events` table
+- `src/weight.ts` — NEW: WeightEngine constants, `computeEffectiveWeight`, `applyWeightsOnAssert`
+- `src/datoms.ts` — extend types with `influence_weight`, modify `transact`, add 5 new export functions
+- `src/mcp.ts` — add 5 new MCP tools
+- `tests/weight.test.ts` — NEW: integration tests for all new functionality
+- `package.json` — bump patch version on publish
 
-## Risks & Unknowns
-- pgvector may not be installed in test environment — tests should handle gracefully
-- DATABASE_URL env var required — tests need a real PostgreSQL instance
-- `DISTINCT ON` performance at scale — indexes mitigate this
-- The task says "no schema migrations needed beyond initial CREATE IF NOT EXISTS" — good, that's what we'll do
+## Key Design Decisions
+
+1. **Corroboration via new datom**: asserting same (entity, attribute, value) inserts a new datom at `old_weight + 0.25`. The window function picks the latest datom; current weight is always on the newest row.
+2. **Contradiction mutates old datom**: `UPDATE datoms SET influence_weight = max(old - 0.4, 0.1)`. The old value's datom gets penalized in place.
+3. **Weight check uses tx_id < currentTxId**: within a multi-fact transaction, only consider facts from PREVIOUS transactions to avoid intra-tx order confusion.
+4. **Decay is on-read**: `effective_weight = stored_weight * 0.995^(hours_since_latest_datom_for_this_triple)`. `created_at` of the latest datom for (entity, attribute, value) is the "last corroboration time".
+5. **datom_weight_events** tracks all events for dominance curve queries. Each event stores entity/attribute/value/event_type/weight_before/weight_after/tx_id/agent_id/created_at.
+
+## Risks
+
+- Multi-fact transactions with conflicting facts in the same tx need careful ordering (mitigated by tx_id < currentTxId check)
+- Adding `influence_weight` to existing datoms (ALTER TABLE ... ADD COLUMN IF NOT EXISTS) sets default 1.0 for all existing rows — correct
+- `RawCurrentFactRow` and `CurrentFact` types gain `influence_weight` (additive, backward-compatible)

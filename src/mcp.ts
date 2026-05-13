@@ -13,6 +13,11 @@ import {
   listAttributes,
   getTransaction,
   getStats,
+  corroborateExplicit,
+  getDominanceCurve,
+  getDominantFacts,
+  detectAnomalies,
+  getFactDuration,
 } from './datoms.js';
 
 const FactSchema = z.object({
@@ -274,6 +279,117 @@ export function createMcpServer(): McpServer {
             text: JSON.stringify(s, null, 2),
           },
         ],
+      };
+    }
+  );
+
+  // ─── corroborate ────────────────────────────────────────────────────────────
+  server.tool(
+    'corroborate',
+    'Explicitly corroborate a fact — increases its influence weight and resets its decay clock.',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z.string().min(1).describe('Attribute name'),
+      value: z.string().describe('Value to corroborate (exact match)'),
+      agent_id: z.string().min(1).describe('Agent ID of the corroborating agent'),
+      note: z.string().optional().describe('Optional note explaining the corroboration'),
+    },
+    async ({ entity, attribute, value, agent_id, note }) => {
+      const result = await corroborateExplicit(entity, attribute, value, agent_id, note);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_dominance_curve ────────────────────────────────────────────────────
+  server.tool(
+    'get_dominance_curve',
+    'Return the full influence weight history and lifecycle phase for a fact (assert → dominance → decay → superseded).',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z.string().optional().describe('Optional: restrict to this attribute'),
+      value: z.string().optional().describe('Optional: restrict to this exact value'),
+    },
+    async ({ entity, attribute, value }) => {
+      const result = await getDominanceCurve(entity, attribute, value);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_dominant_facts ─────────────────────────────────────────────────────
+  server.tool(
+    'get_dominant_facts',
+    'Return the currently dominant facts for an entity (or globally), ranked by effective influence weight.',
+    {
+      entity: z.string().optional().describe('Optional: restrict to this entity'),
+      threshold: z
+        .number()
+        .min(0)
+        .max(3)
+        .optional()
+        .describe('Minimum effective weight to consider dominant (default 0.7)'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('Maximum number of results (default 50)'),
+      as_of: z
+        .string()
+        .optional()
+        .describe('ISO 8601 timestamp — return dominant facts as of this time'),
+    },
+    async ({ entity, threshold, limit, as_of }) => {
+      const result = await getDominantFacts(entity, threshold, limit, as_of);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── detect_anomalies ───────────────────────────────────────────────────────
+  server.tool(
+    'detect_anomalies',
+    'Detect facts with anomalous weight trajectories: fast_ascent (suspicious rapid corroboration), isolated_assertion (unconfirmed high-weight fact), fast_decay (contradicted quickly).',
+    {
+      entity: z.string().optional().describe('Optional: restrict anomaly scan to this entity'),
+      window_hours: z
+        .number()
+        .min(1)
+        .optional()
+        .describe('Look-back window in hours (default 24)'),
+    },
+    async ({ entity, window_hours }) => {
+      const result = await detectAnomalies(entity, window_hours);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
+
+  // ─── get_fact_duration ──────────────────────────────────────────────────────
+  server.tool(
+    'get_fact_duration',
+    'Return the effective duration of a fact — the period during which it was dominant (weight above threshold).',
+    {
+      entity: z.string().min(1).describe('Entity ID'),
+      attribute: z.string().min(1).describe('Attribute name'),
+      value: z.string().describe('Exact value'),
+      dominance_threshold: z
+        .number()
+        .min(0)
+        .max(3)
+        .optional()
+        .describe('Weight threshold for dominance (default 0.7)'),
+    },
+    async ({ entity, attribute, value, dominance_threshold }) => {
+      const result = await getFactDuration(entity, attribute, value, dominance_threshold);
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
       };
     }
   );

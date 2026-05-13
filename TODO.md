@@ -1,20 +1,12 @@
-# TODO: nexus-temporal-storage
+# TODO: Temporal Semantic Analysis
 
-- [ ] Create git branch feat/initial-build
-- [ ] Initialize package.json with dependencies
-- [ ] Create tsconfig.json
-- [ ] Implement src/db.ts (PostgreSQL connection + schema migration)
-- [ ] Implement src/datoms.ts (core EAV(T) operations)
-- [ ] Implement src/mcp.ts (MCP server with all 11 tools)
-- [ ] Implement src/index.ts (entrypoint)
-- [ ] Write tests/datoms.test.ts (full coverage)
-- [ ] Write tests/mcp.test.ts (MCP tool integration tests)
-- [ ] Write README.md
-- [ ] Write settings.snippet.json
-- [ ] Run npm run build (verify it passes)
-- [ ] Run tests (verify all pass)
-- [ ] git diff --staged review
-- [ ] git commit
-- [ ] git push
-- [ ] gh pr create
-- [ ] gh pr merge --squash --auto
+- [x] Create branch feat/temporal-semantic-analysis
+- [x] Write PLAN.md and TODO.md
+- [ ] Extend db.ts: influence_weight column + datom_weight_events table
+- [ ] Create src/weight.ts: constants, computeEffectiveWeight, applyWeightsOnAssert
+- [ ] Modify src/datoms.ts: extend types, modify transact, add 5 new query functions
+- [ ] Extend src/mcp.ts: add 5 new MCP tools
+- [ ] Write tests/weight.test.ts
+- [ ] Run build + tests, fix failures
+- [ ] Review git diff --staged
+- [ ] Commit + push + PR + merge + npm publish
