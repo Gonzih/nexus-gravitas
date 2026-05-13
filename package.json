@@ -1,6 +1,6 @@
 {
   "name": "nexus-gravitas",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Gravitas — temporal semantic memory for agentic systems. A gravit is the atomic unit of weighted, time-bound knowledge.",
   "main": "dist/index.js",
   "scripts": {
