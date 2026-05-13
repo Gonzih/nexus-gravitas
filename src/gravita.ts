@@ -23,7 +23,7 @@ export interface TransactResult {
   count: number;
 }
 
-export interface Datom {
+export interface Gravit {
   id: number;
   entity: string;
   attribute: string;
@@ -46,7 +46,7 @@ export interface CurrentFact {
   influence_weight: number;
 }
 
-export interface HistoryEntry extends Datom {
+export interface HistoryEntry extends Gravit {
   tx_at: string;
   agent_id: string | null;
   note: string | null;
@@ -59,12 +59,12 @@ export interface TransactionRecord {
   note: string | null;
 }
 
-export interface TransactionWithDatoms extends TransactionRecord {
-  datoms: Datom[];
+export interface TransactionWithGravita extends TransactionRecord {
+  gravita: Gravit[];
 }
 
 export interface StatsResult {
-  total_datoms: number;
+  total_gravita: number;
   total_transactions: number;
   total_entities: number;
   total_attributes: number;
@@ -94,7 +94,7 @@ interface RawCurrentFactRow {
   influence_weight: string;
 }
 
-interface RawDatomRow {
+interface RawGravitRow {
   id: string;
   entity: string;
   attribute: string;
@@ -107,7 +107,7 @@ interface RawDatomRow {
   influence_weight: string;
 }
 
-interface RawHistoryRow extends RawDatomRow {
+interface RawHistoryRow extends RawGravitRow {
   tx_at: Date;
   agent_id: string | null;
   note: string | null;
@@ -134,7 +134,7 @@ function parseCurrentFact(row: RawCurrentFactRow): CurrentFact {
   };
 }
 
-function parseDatom(row: RawDatomRow): Datom {
+function parseGravit(row: RawGravitRow): Gravit {
   return {
     id: parseInt(row.id, 10),
     entity: row.entity,
@@ -151,7 +151,7 @@ function parseDatom(row: RawDatomRow): Datom {
 
 function parseHistoryEntry(row: RawHistoryRow): HistoryEntry {
   return {
-    ...parseDatom(row),
+    ...parseGravit(row),
     tx_at: row.tx_at instanceof Date ? row.tx_at.toISOString() : String(row.tx_at),
     agent_id: row.agent_id,
     note: row.note,
@@ -199,7 +199,7 @@ export async function transact(
           [fact.entity, fact.attribute, fact.value, numVal, tsVal, txId, weightResult.newDatomWeight]
         );
 
-        // Apply contradiction to old datom
+        // Apply contradiction to old gravit
         if (weightResult.contradictedId !== null) {
           await client.query(
             `UPDATE datoms SET influence_weight = $1 WHERE id = $2`,
@@ -267,7 +267,7 @@ export async function getEntity(
     attrFilter = `AND d.attribute = $${params.length}`;
   }
 
-  // Within the same tx_id, a higher datom id means it was inserted later.
+  // Within the same tx_id, a higher gravit id means it was inserted later.
   // For a retract+assert in one tx, the assert has a higher id and wins rn=1.
   const sql = `
     WITH ranked AS (
@@ -322,7 +322,7 @@ export async function findEntities(
 }
 
 /** Query current state with optional filters. */
-export async function queryDatoms(
+export async function queryGravita(
   entity_pattern?: string,
   attribute?: string,
   since?: string
@@ -432,7 +432,7 @@ export async function asOf(
   return result.rows.map(parseCurrentFact);
 }
 
-/** Get full history of all datoms (including retractions) for entity/attribute. */
+/** Get full history of all gravita (including retractions) for entity/attribute. */
 export async function getHistory(
   entity: string,
   attribute?: string
@@ -470,7 +470,7 @@ export async function getHistory(
   return result.rows.map(parseHistoryEntry);
 }
 
-/** Get all datoms added after a given transaction. */
+/** Get all gravita added after a given transaction. */
 export async function sinceTransaction(
   tx_id: number,
   entity_pattern?: string
@@ -537,8 +537,8 @@ export async function listAttributes(): Promise<AttributeStat[]> {
   }));
 }
 
-/** Get transaction metadata + all datoms in that tx. */
-export async function getTransaction(tx_id: number): Promise<TransactionWithDatoms> {
+/** Get transaction metadata + all gravita in that tx. */
+export async function getTransaction(tx_id: number): Promise<TransactionWithGravita> {
   const txResult = await getPool().query<RawTxRow>(
     'SELECT id, tx_at, agent_id, note FROM transactions WHERE id = $1',
     [tx_id]
@@ -548,7 +548,7 @@ export async function getTransaction(tx_id: number): Promise<TransactionWithDato
   }
   const tx = parseTx(txResult.rows[0]!);
 
-  const datomResult = await getPool().query<RawDatomRow>(
+  const gravitResult = await getPool().query<RawGravitRow>(
     `SELECT id, entity, attribute, value, value_num, value_ts, tx_id, retracted, created_at, influence_weight
      FROM datoms WHERE tx_id = $1 ORDER BY id`,
     [tx_id]
@@ -556,7 +556,7 @@ export async function getTransaction(tx_id: number): Promise<TransactionWithDato
 
   return {
     ...tx,
-    datoms: datomResult.rows.map(parseDatom),
+    gravita: gravitResult.rows.map(parseGravit),
   };
 }
 
@@ -564,14 +564,14 @@ export async function getTransaction(tx_id: number): Promise<TransactionWithDato
 export async function getStats(): Promise<StatsResult> {
   const sql = `
     SELECT
-      (SELECT COUNT(*) FROM datoms)::bigint AS total_datoms,
+      (SELECT COUNT(*) FROM datoms)::bigint AS total_gravita,
       (SELECT COUNT(*) FROM transactions)::bigint AS total_transactions,
       (SELECT COUNT(DISTINCT entity) FROM datoms)::bigint AS total_entities,
       (SELECT COUNT(DISTINCT attribute) FROM datoms)::bigint AS total_attributes,
       pg_size_pretty(pg_database_size(current_database())) AS db_size
   `;
   const result = await getPool().query<{
-    total_datoms: string;
+    total_gravita: string;
     total_transactions: string;
     total_entities: string;
     total_attributes: string;
@@ -579,7 +579,7 @@ export async function getStats(): Promise<StatsResult> {
   }>(sql);
   const r = result.rows[0]!;
   return {
-    total_datoms: parseInt(r.total_datoms, 10),
+    total_gravita: parseInt(r.total_gravita, 10),
     total_transactions: parseInt(r.total_transactions, 10),
     total_entities: parseInt(r.total_entities, 10),
     total_attributes: parseInt(r.total_attributes, 10),
@@ -711,7 +711,7 @@ function classifyPhase(
 
 /**
  * Explicitly corroborate a fact — increases its influence weight and resets
- * the decay clock by inserting a new datom with the increased weight.
+ * the decay clock by inserting a new gravit with the increased weight.
  */
 export async function corroborateExplicit(
   entity: string,
@@ -724,7 +724,7 @@ export async function corroborateExplicit(
   try {
     await client.query('BEGIN');
 
-    // Get current weight from latest non-retracted datom for this triple
+    // Get current weight from latest non-retracted gravit for this triple
     const existing = await client.query<{ influence_weight: string }>(
       `SELECT influence_weight
        FROM datoms
@@ -748,7 +748,7 @@ export async function corroborateExplicit(
     const txRow = txResult.rows[0]!;
     const txId = parseInt(txRow.id, 10);
 
-    // Insert new datom with updated weight (keeps provenance of who corroborated)
+    // Insert new gravit with updated weight (keeps provenance of who corroborated)
     const numVal = tryParseNumber(value);
     const tsVal = tryParseTimestamp(value);
     await client.query(
@@ -795,6 +795,7 @@ export async function getDominanceCurve(
     valFilter = `AND value = $${params.length}`;
   }
 
+  // gravitWeightEvents (SQL table: datom_weight_events)
   const triplesResult = await getPool().query<{ entity: string; attribute: string; value: string }>(
     `SELECT DISTINCT entity, attribute, value
      FROM datom_weight_events
@@ -806,6 +807,7 @@ export async function getDominanceCurve(
   const results: DominanceCurveResult[] = [];
 
   for (const triple of triplesResult.rows) {
+    // gravitWeightEvents (SQL table: datom_weight_events)
     const eventsResult = await getPool().query<RawWeightEventRow>(
       `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
               tx_id, agent_id, note, created_at
@@ -816,8 +818,8 @@ export async function getDominanceCurve(
     );
     const events = eventsResult.rows.map(parseWeightEvent);
 
-    // Latest datom for this triple to get stored weight and its created_at
-    const latestDatom = await getPool().query<{ influence_weight: string; created_at: Date; tx_id: string }>(
+    // Latest gravit for this triple to get stored weight and its created_at
+    const latestGravit = await getPool().query<{ influence_weight: string; created_at: Date; tx_id: string }>(
       `SELECT influence_weight, created_at, tx_id
        FROM datoms
        WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
@@ -826,13 +828,13 @@ export async function getDominanceCurve(
       [triple.entity, triple.attribute, triple.value]
     );
 
-    const storedWeight = latestDatom.rows.length > 0
-      ? parseFloat(latestDatom.rows[0]!.influence_weight)
+    const storedWeight = latestGravit.rows.length > 0
+      ? parseFloat(latestGravit.rows[0]!.influence_weight)
       : WEIGHT_FLOOR;
-    const lastEventAt = latestDatom.rows.length > 0
-      ? (latestDatom.rows[0]!.created_at instanceof Date
-        ? latestDatom.rows[0]!.created_at.toISOString()
-        : String(latestDatom.rows[0]!.created_at))
+    const lastEventAt = latestGravit.rows.length > 0
+      ? (latestGravit.rows[0]!.created_at instanceof Date
+        ? latestGravit.rows[0]!.created_at.toISOString()
+        : String(latestGravit.rows[0]!.created_at))
       : new Date().toISOString();
 
     const currentWeight = computeEffectiveWeight(storedWeight, lastEventAt);
@@ -1001,6 +1003,7 @@ export async function detectAnomalies(
   params.push(window_hours);
   const windowFilter = `AND created_at >= now() - ($${params.length} || ' hours')::interval`;
 
+  // gravitWeightEvents (SQL table: datom_weight_events)
   const eventsResult = await getPool().query<RawWeightEventRow>(
     `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
             tx_id, agent_id, note, created_at
@@ -1032,21 +1035,21 @@ export async function detectAnomalies(
     const corrobEvs = evs.filter((e) => e.event_type === 'corroborate');
     const contradictEvs = evs.filter((e) => e.event_type === 'contradict');
 
-    // Get current stored weight
-    const latestDatom = await getPool().query<{ influence_weight: string; created_at: Date }>(
+    // Get current stored weight from latest gravit
+    const latestGravit = await getPool().query<{ influence_weight: string; created_at: Date }>(
       `SELECT influence_weight, created_at
        FROM datoms
        WHERE entity = $1 AND attribute = $2 AND value = $3 AND retracted = false
        ORDER BY tx_id DESC, id DESC LIMIT 1`,
       [tripleEntity, tripleAttribute, tripleValue]
     );
-    const storedWeight = latestDatom.rows.length > 0
-      ? parseFloat(latestDatom.rows[0]!.influence_weight)
+    const storedWeight = latestGravit.rows.length > 0
+      ? parseFloat(latestGravit.rows[0]!.influence_weight)
       : WEIGHT_FLOOR;
-    const lastAt = latestDatom.rows.length > 0
-      ? (latestDatom.rows[0]!.created_at instanceof Date
-        ? latestDatom.rows[0]!.created_at.toISOString()
-        : String(latestDatom.rows[0]!.created_at))
+    const lastAt = latestGravit.rows.length > 0
+      ? (latestGravit.rows[0]!.created_at instanceof Date
+        ? latestGravit.rows[0]!.created_at.toISOString()
+        : String(latestGravit.rows[0]!.created_at))
       : new Date().toISOString();
     const currentWeight = computeEffectiveWeight(storedWeight, lastAt);
     const firstAssertedAt = assertEv?.created_at ?? evs[0]!.created_at;
@@ -1130,7 +1133,7 @@ export async function getFactDuration(
   value: string,
   dominance_threshold = 0.7
 ): Promise<FactDurationResult> {
-  // Get first assertion event for this triple
+  // Get first assertion event for this triple from gravitWeightEvents (SQL: datom_weight_events)
   const assertResult = await getPool().query<RawWeightEventRow>(
     `SELECT id, entity, attribute, value, event_type, weight_before, weight_after,
             tx_id, agent_id, note, created_at
@@ -1148,8 +1151,8 @@ export async function getFactDuration(
   const firstAssert = parseWeightEvent(assertResult.rows[0]!);
   const assertedAt = firstAssert.created_at;
 
-  // Get latest datom for current stored weight and created_at (decay clock)
-  const latestDatom = await getPool().query<{
+  // Get latest gravit for current stored weight and created_at (decay clock)
+  const latestGravit = await getPool().query<{
     influence_weight: string;
     created_at: Date;
     tx_id: string;
@@ -1162,13 +1165,13 @@ export async function getFactDuration(
     [entity, attribute, value]
   );
 
-  const storedWeight = latestDatom.rows.length > 0
-    ? parseFloat(latestDatom.rows[0]!.influence_weight)
+  const storedWeight = latestGravit.rows.length > 0
+    ? parseFloat(latestGravit.rows[0]!.influence_weight)
     : WEIGHT_FLOOR;
-  const lastEventAt = latestDatom.rows.length > 0
-    ? (latestDatom.rows[0]!.created_at instanceof Date
-      ? latestDatom.rows[0]!.created_at.toISOString()
-      : String(latestDatom.rows[0]!.created_at))
+  const lastEventAt = latestGravit.rows.length > 0
+    ? (latestGravit.rows[0]!.created_at instanceof Date
+      ? latestGravit.rows[0]!.created_at.toISOString()
+      : String(latestGravit.rows[0]!.created_at))
     : assertedAt;
 
   const currentEffectiveWeight = computeEffectiveWeight(storedWeight, lastEventAt);

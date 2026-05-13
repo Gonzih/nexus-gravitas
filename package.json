@@ -1,7 +1,7 @@
 {
-  "name": "nexus-temporal-storage",
+  "name": "nexus-gravitas",
   "version": "1.0.1",
-  "description": "Datomic-inspired temporal database for agentic systems, accessed via MCP",
+  "description": "Gravitas — temporal semantic memory for agentic systems. A gravit is the atomic unit of weighted, time-bound knowledge.",
   "main": "dist/index.js",
   "scripts": {
     "build": "node build.mjs",

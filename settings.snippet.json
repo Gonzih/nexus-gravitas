@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "nexus-temporal-storage": {
+    "nexus-gravitas": {
       "command": "node",
-      "args": ["/path/to/nexus-temporal-storage/dist/index.js"],
+      "args": ["/path/to/nexus-gravitas/dist/index.js"],
       "env": {
         "DATABASE_URL": "postgres://localhost/nexus_temporal"
       }

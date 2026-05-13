@@ -12,7 +12,7 @@ import {
   getDominantFacts,
   detectAnomalies,
   getFactDuration,
-} from '../src/datoms';
+} from '../src/gravita';
 import { computeEffectiveWeight, WEIGHT_INITIAL, WEIGHT_CORROBORATION_DELTA, WEIGHT_CONTRADICTION_DELTA, WEIGHT_FLOOR, DECAY_RATE } from '../src/weight';
 import { runMigrations, closePool, getPool } from '../src/db';
 
@@ -27,7 +27,7 @@ describeIfDb('weight — integration tests', () => {
   beforeAll(async () => {
     await runMigrations();
     await getPool().query(
-      'TRUNCATE datom_weight_events, datoms, transactions RESTART IDENTITY CASCADE'
+      'TRUNCATE datom_weight_events, datoms, transactions RESTART IDENTITY CASCADE' // gravitWeightEvents, gravita, transactions
     );
   });
 

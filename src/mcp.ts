@@ -5,7 +5,7 @@ import {
   transact,
   getEntity,
   findEntities,
-  queryDatoms,
+  queryGravita,
   asOf,
   getHistory,
   sinceTransaction,
@@ -18,7 +18,7 @@ import {
   getDominantFacts,
   detectAnomalies,
   getFactDuration,
-} from './datoms.js';
+} from './gravita.js';
 
 const FactSchema = z.object({
   op: z.enum(['assert', 'retract']),
@@ -29,7 +29,7 @@ const FactSchema = z.object({
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
-    name: 'nexus-temporal-storage',
+    name: 'nexus-gravitas',
     version: '1.0.0',
   });
 
@@ -105,7 +105,7 @@ export function createMcpServer(): McpServer {
   // ─── query ──────────────────────────────────────────────────────────────────
   server.tool(
     'query',
-    'Query current state datoms with optional entity pattern, attribute, and since filters.',
+    'Query current state gravita with optional entity pattern, attribute, and since filters.',
     {
       entity_pattern: z
         .string()
@@ -115,10 +115,10 @@ export function createMcpServer(): McpServer {
       since: z
         .string()
         .optional()
-        .describe('ISO 8601 timestamp — only datoms from transactions at or after this time'),
+        .describe('ISO 8601 timestamp — only gravita from transactions at or after this time'),
     },
     async ({ entity_pattern, attribute, since }) => {
-      const results = await queryDatoms(entity_pattern, attribute, since);
+      const results = await queryGravita(entity_pattern, attribute, since);
       return {
         content: [
           {
@@ -159,7 +159,7 @@ export function createMcpServer(): McpServer {
   // ─── history ────────────────────────────────────────────────────────────────
   server.tool(
     'history',
-    'Get the full timeline of all datoms (including retractions) for an entity/attribute.',
+    'Get the full timeline of all gravita (including retractions) for an entity/attribute.',
     {
       entity: z.string().min(1).describe('Entity ID'),
       attribute: z
@@ -183,9 +183,9 @@ export function createMcpServer(): McpServer {
   // ─── since ──────────────────────────────────────────────────────────────────
   server.tool(
     'since',
-    'Get all datoms added after a given transaction ID.',
+    'Get all gravita added after a given transaction ID.',
     {
-      tx_id: z.number().int().describe('Return datoms with tx_id > this value'),
+      tx_id: z.number().int().describe('Return gravita with tx_id > this value'),
       entity_pattern: z
         .string()
         .optional()
@@ -248,7 +248,7 @@ export function createMcpServer(): McpServer {
   // ─── get_transaction ────────────────────────────────────────────────────────
   server.tool(
     'get_transaction',
-    'Get transaction metadata and all datoms written in that transaction.',
+    'Get transaction metadata and all gravita written in that transaction.',
     {
       tx_id: z.number().int().describe('Transaction ID to retrieve'),
     },
@@ -268,7 +268,7 @@ export function createMcpServer(): McpServer {
   // ─── stats ──────────────────────────────────────────────────────────────────
   server.tool(
     'stats',
-    'Get database statistics: total datoms, transactions, entities, attributes, and DB size.',
+    'Get database statistics: total gravita, transactions, entities, attributes, and DB size.',
     {},
     async () => {
       const s = await getStats();

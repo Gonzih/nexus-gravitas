@@ -27,7 +27,7 @@ describeIfDb('MCP server', () => {
   describe('transact tool', () => {
     it('asserts facts and returns tx info', async () => {
       // Call the underlying handler directly via the datoms layer (MCP handler calls it)
-      const { transact } = await import('../src/datoms');
+      const { transact } = await import('../src/gravita');
       const result = await transact(
         [
           { op: 'assert', entity: 'mcp-test:entity1', attribute: 'color', value: 'red' },
@@ -43,7 +43,7 @@ describeIfDb('MCP server', () => {
 
   describe('get tool', () => {
     it('retrieves current facts for an entity', async () => {
-      const { getEntity } = await import('../src/datoms');
+      const { getEntity } = await import('../src/gravita');
       const facts = await getEntity('mcp-test:entity1');
       expect(facts.length).toBeGreaterThan(0);
       const colorFact = facts.find((f) => f.attribute === 'color');
@@ -53,7 +53,7 @@ describeIfDb('MCP server', () => {
 
   describe('find tool', () => {
     it('finds entities with matching attribute=value', async () => {
-      const { findEntities } = await import('../src/datoms');
+      const { findEntities } = await import('../src/gravita');
       const entities = await findEntities('color', 'red');
       expect(entities).toContain('mcp-test:entity1');
     });
@@ -61,15 +61,15 @@ describeIfDb('MCP server', () => {
 
   describe('query tool', () => {
     it('queries with entity pattern', async () => {
-      const { queryDatoms } = await import('../src/datoms');
-      const results = await queryDatoms('mcp-test:%');
+      const { queryGravita } = await import('../src/gravita');
+      const results = await queryGravita('mcp-test:%');
       expect(results.some((r) => r.entity === 'mcp-test:entity1')).toBe(true);
     });
   });
 
   describe('as_of tool', () => {
     it('retrieves entity state at first transaction', async () => {
-      const { asOf } = await import('../src/datoms');
+      const { asOf } = await import('../src/gravita');
       const firstTx = await getPool().query<{ id: string }>(
         'SELECT id FROM transactions ORDER BY id LIMIT 1'
       );
@@ -79,14 +79,14 @@ describeIfDb('MCP server', () => {
     });
 
     it('throws when no time context given', async () => {
-      const { asOf } = await import('../src/datoms');
+      const { asOf } = await import('../src/gravita');
       await expect(asOf('mcp-test:entity1')).rejects.toThrow();
     });
   });
 
   describe('history tool', () => {
     it('returns history entries', async () => {
-      const { getHistory } = await import('../src/datoms');
+      const { getHistory } = await import('../src/gravita');
       const entries = await getHistory('mcp-test:entity1');
       expect(entries.length).toBeGreaterThan(0);
     });
@@ -94,7 +94,7 @@ describeIfDb('MCP server', () => {
 
   describe('since tool', () => {
     it('returns datoms after given tx', async () => {
-      const { sinceTransaction } = await import('../src/datoms');
+      const { sinceTransaction } = await import('../src/gravita');
       const entries = await sinceTransaction(0);
       expect(entries.length).toBeGreaterThan(0);
     });
@@ -102,7 +102,7 @@ describeIfDb('MCP server', () => {
 
   describe('list_entities tool', () => {
     it('returns entity list', async () => {
-      const { listEntities } = await import('../src/datoms');
+      const { listEntities } = await import('../src/gravita');
       const entities = await listEntities();
       expect(entities).toContain('mcp-test:entity1');
     });
@@ -110,7 +110,7 @@ describeIfDb('MCP server', () => {
 
   describe('list_attributes tool', () => {
     it('returns attribute stats', async () => {
-      const { listAttributes } = await import('../src/datoms');
+      const { listAttributes } = await import('../src/gravita');
       const attrs = await listAttributes();
       const attrNames = attrs.map((a) => a.attribute);
       expect(attrNames).toContain('color');
@@ -120,29 +120,29 @@ describeIfDb('MCP server', () => {
 
   describe('get_transaction tool', () => {
     it('returns tx details', async () => {
-      const { getTransaction } = await import('../src/datoms');
+      const { getTransaction } = await import('../src/gravita');
       const firstTx = await getPool().query<{ id: string }>(
         'SELECT id FROM transactions ORDER BY id LIMIT 1'
       );
       const txId = parseInt(firstTx.rows[0]!.id, 10);
       const tx = await getTransaction(txId);
       expect(tx.id).toBe(txId);
-      expect(Array.isArray(tx.datoms)).toBe(true);
+      expect(Array.isArray(tx.gravita)).toBe(true);
     });
   });
 
   describe('stats tool', () => {
     it('returns statistics', async () => {
-      const { getStats } = await import('../src/datoms');
+      const { getStats } = await import('../src/gravita');
       const stats = await getStats();
-      expect(typeof stats.total_datoms).toBe('number');
+      expect(typeof stats.total_gravita).toBe('number');
       expect(typeof stats.db_size).toBe('string');
     });
   });
 
   describe('retract workflow', () => {
     it('retraction hides old fact and new assertion shows new value', async () => {
-      const { transact, getEntity } = await import('../src/datoms');
+      const { transact, getEntity } = await import('../src/gravita');
 
       // Set initial value
       await transact([
@@ -161,7 +161,7 @@ describeIfDb('MCP server', () => {
     });
 
     it('full history includes retraction', async () => {
-      const { getHistory } = await import('../src/datoms');
+      const { getHistory } = await import('../src/gravita');
       const entries = await getHistory('mcp-test:entity2', 'status');
       const retractions = entries.filter((e) => e.retracted === true);
       expect(retractions.length).toBeGreaterThan(0);
@@ -170,7 +170,7 @@ describeIfDb('MCP server', () => {
 
   describe('time-travel accuracy', () => {
     it('as_of shows past value before update', async () => {
-      const { transact, asOf } = await import('../src/datoms');
+      const { transact, asOf } = await import('../src/gravita');
 
       const tx1 = await transact([
         { op: 'assert', entity: 'mcp-test:timetravel', attribute: 'phase', value: 'phase1' },

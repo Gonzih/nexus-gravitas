@@ -1,5 +1,5 @@
 /**
- * Integration tests for datoms.ts — requires a real PostgreSQL instance.
+ * Integration tests for gravita.ts — requires a real PostgreSQL instance.
  * Set DATABASE_URL before running: e.g. DATABASE_URL=postgres://localhost/nexus_test
  */
 
@@ -7,7 +7,7 @@ import {
   transact,
   getEntity,
   findEntities,
-  queryDatoms,
+  queryGravita,
   asOf,
   getHistory,
   sinceTransaction,
@@ -15,7 +15,7 @@ import {
   listAttributes,
   getTransaction,
   getStats,
-} from '../src/datoms';
+} from '../src/gravita';
 import { runMigrations, closePool, getPool } from '../src/db';
 
 const TEST_DB_URL = process.env['DATABASE_URL'];
@@ -26,7 +26,7 @@ if (!TEST_DB_URL) {
 
 const describeIfDb = TEST_DB_URL ? describe : describe.skip;
 
-describeIfDb('datoms — integration tests', () => {
+describeIfDb('gravita — integration tests', () => {
   beforeAll(async () => {
     await runMigrations();
     // Clean up any data from previous test runs
@@ -68,7 +68,7 @@ describeIfDb('datoms — integration tests', () => {
       expect(facts[0]?.value_num).toBe(50000);
     });
 
-    it('stores retract datoms', async () => {
+    it('stores retract gravita', async () => {
       await transact([
         { op: 'retract', entity: 'project:ecoclaw', attribute: 'status', value: 'planning' },
         { op: 'assert', entity: 'project:ecoclaw', attribute: 'status', value: 'active' },
@@ -79,7 +79,7 @@ describeIfDb('datoms — integration tests', () => {
 
     it('is atomic — all or nothing', async () => {
       // Inject a malformed query by passing an invalid entity (empty string is caught by Zod in MCP layer)
-      // At the datoms layer, we trust the caller; test that DB constraints work
+      // At the gravita layer, we trust the caller; test that DB constraints work
       const countBefore = (await getPool().query('SELECT COUNT(*) FROM datoms')).rows[0]?.count;
       try {
         await transact([
@@ -142,28 +142,28 @@ describeIfDb('datoms — integration tests', () => {
     });
   });
 
-  describe('queryDatoms', () => {
-    it('returns current datoms matching entity pattern', async () => {
-      const results = await queryDatoms('project:%');
+  describe('queryGravita', () => {
+    it('returns current gravita matching entity pattern', async () => {
+      const results = await queryGravita('project:%');
       const entities = results.map((r) => r.entity);
       expect(entities).toContain('project:ecoclaw');
       expect(entities).toContain('project:nexus');
     });
 
     it('filters by attribute', async () => {
-      const results = await queryDatoms(undefined, 'name');
+      const results = await queryGravita(undefined, 'name');
       expect(results.every((r) => r.attribute === 'name')).toBe(true);
     });
 
     it('filters by since timestamp', async () => {
       const past = new Date(Date.now() - 60_000).toISOString();
-      const results = await queryDatoms(undefined, undefined, past);
+      const results = await queryGravita(undefined, undefined, past);
       expect(results.length).toBeGreaterThan(0);
     });
 
     it('returns empty for future since timestamp', async () => {
       const future = new Date(Date.now() + 60_000).toISOString();
-      const results = await queryDatoms(undefined, undefined, future);
+      const results = await queryGravita(undefined, undefined, future);
       expect(results).toHaveLength(0);
     });
   });
@@ -216,7 +216,7 @@ describeIfDb('datoms — integration tests', () => {
   });
 
   describe('history', () => {
-    it('returns all datoms including retractions', async () => {
+    it('returns all gravita including retractions', async () => {
       const entries = await getHistory('project:ecoclaw', 'status');
       // Should have: assert planning, retract planning, assert active
       expect(entries.length).toBeGreaterThanOrEqual(3);
@@ -246,7 +246,7 @@ describeIfDb('datoms — integration tests', () => {
   });
 
   describe('sinceTransaction', () => {
-    it('returns datoms after given tx_id', async () => {
+    it('returns gravita after given tx_id', async () => {
       const firstTx = await getPool().query<{ id: string }>(
         'SELECT id FROM transactions ORDER BY id LIMIT 1'
       );
@@ -307,7 +307,7 @@ describeIfDb('datoms — integration tests', () => {
       expect(attrs.every((a) => typeof a.usage_count === 'number')).toBe(true);
     });
 
-    it('status has higher count due to retraction datom', async () => {
+    it('status has higher count due to retraction gravit', async () => {
       const attrs = await listAttributes();
       const statusAttr = attrs.find((a) => a.attribute === 'status');
       expect(statusAttr).toBeDefined();
@@ -317,7 +317,7 @@ describeIfDb('datoms — integration tests', () => {
   });
 
   describe('getTransaction', () => {
-    it('returns transaction metadata and datoms', async () => {
+    it('returns transaction metadata and gravita', async () => {
       const firstTx = await getPool().query<{ id: string }>(
         'SELECT id FROM transactions ORDER BY id LIMIT 1'
       );
@@ -326,8 +326,8 @@ describeIfDb('datoms — integration tests', () => {
 
       expect(tx.id).toBe(txId);
       expect(typeof tx.tx_at).toBe('string');
-      expect(Array.isArray(tx.datoms)).toBe(true);
-      expect(tx.datoms.length).toBeGreaterThan(0);
+      expect(Array.isArray(tx.gravita)).toBe(true);
+      expect(tx.gravita.length).toBeGreaterThan(0);
     });
 
     it('includes agent_id and note when set', async () => {
@@ -350,7 +350,7 @@ describeIfDb('datoms — integration tests', () => {
   describe('getStats', () => {
     it('returns numeric counts and db_size string', async () => {
       const stats = await getStats();
-      expect(stats.total_datoms).toBeGreaterThan(0);
+      expect(stats.total_gravita).toBeGreaterThan(0);
       expect(stats.total_transactions).toBeGreaterThan(0);
       expect(stats.total_entities).toBeGreaterThan(0);
       expect(stats.total_attributes).toBeGreaterThan(0);

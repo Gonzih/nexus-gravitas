@@ -1,8 +1,12 @@
-# nexus-temporal-storage
+# nexus-gravitas
 
-A Datomic-inspired temporal database for agentic systems, accessed exclusively via MCP.
+Gravitas — temporal semantic memory for agentic systems.
 
-Every fact is a **datom**: `[entity, attribute, value, tx_id]`. Nothing is ever updated or deleted — only new datoms are appended. Retractions add a new datom with `retracted=true`. Time-travel is native: query the DB as it was at any transaction or timestamp.
+> Gravitas takes its name from the GSV *Gravitas* in Iain M. Banks' *Excession* — a Culture Mind carrying the accumulated weight of knowledge it can barely contain.
+
+A **gravit** is the atomic unit of weighted, time-bound knowledge: `[entity, attribute, value, tx_id]`. Nothing is ever updated or deleted — only new gravita are appended. Retractions add a new gravit with `retracted=true`. Time-travel is native: query the DB as it was at any transaction or timestamp.
+
+Every gravit carries an **influence weight** that tracks how dominant a fact is over time. Facts start at weight 1.0, gain weight when corroborated by other agents, lose weight when contradicted, and passively decay. Dominance curves, fact duration, and anomaly detection expose this lifecycle.
 
 ## Stack
 
@@ -59,6 +63,19 @@ Atomically assert or retract a batch of facts.
 
 Returns: `{ "tx_id": 42, "tx_at": "2026-05-07T14:23:00Z", "count": 2 }`
 
+#### `corroborate`
+Explicitly corroborate a fact — increases its influence weight and resets its decay clock.
+
+```json
+{
+  "entity": "project:ecoclaw",
+  "attribute": "status",
+  "value": "active",
+  "agent_id": "agent:reviewer",
+  "note": "Confirmed active in standup"
+}
+```
+
 ### Current State Queries
 
 #### `get`
@@ -94,17 +111,47 @@ Get entity state at a specific past transaction or timestamp.
 ```
 
 #### `history`
-Full timeline of all datoms (including retractions) for an entity/attribute.
+Full timeline of all gravita (including retractions) for an entity/attribute.
 
 ```json
 { "entity": "project:ecoclaw", "attribute": "status" }
 ```
 
 #### `since`
-All datoms added after a given transaction.
+All gravita added after a given transaction.
 
 ```json
 { "tx_id": 100, "entity_pattern": "project:%" }
+```
+
+### Semantic Weight / Dominance
+
+#### `get_dominance_curve`
+Return the full influence weight history and lifecycle phase for a fact (assert → dominance → decay → superseded).
+
+```json
+{ "entity": "project:ecoclaw", "attribute": "status", "value": "active" }
+```
+
+#### `get_dominant_facts`
+Return the currently dominant facts for an entity (or globally), ranked by effective influence weight.
+
+```json
+{ "entity": "project:ecoclaw", "threshold": 0.7, "limit": 20 }
+```
+
+#### `detect_anomalies`
+Detect facts with anomalous weight trajectories: fast_ascent (suspicious rapid corroboration), isolated_assertion (unconfirmed high-weight fact), fast_decay (contradicted quickly).
+
+```json
+{ "entity": "project:ecoclaw", "window_hours": 24 }
+```
+
+#### `get_fact_duration`
+Return the effective duration of a fact — the period during which it was dominant (weight above threshold).
+
+```json
+{ "entity": "project:ecoclaw", "attribute": "status", "value": "active" }
 ```
 
 ### Meta
@@ -120,14 +167,14 @@ All distinct entity IDs, optionally filtered by attribute.
 All distinct attributes and their usage counts.
 
 #### `get_transaction`
-Transaction metadata + all datoms written in that transaction.
+Transaction metadata + all gravita written in that transaction.
 
 ```json
 { "tx_id": 42 }
 ```
 
 #### `stats`
-Total datoms, transactions, entities, attributes, and DB size.
+Total gravita, transactions, entities, attributes, and DB size.
 
 ## Time-Travel Examples
 
